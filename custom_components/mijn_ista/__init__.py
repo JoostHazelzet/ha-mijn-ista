@@ -12,6 +12,18 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from mijn_ista_api import MijnIstaAPI
 from .coordinator import MijnIstaCoordinator
 
+#### START WORKAROUND
+# See https://github.com/aalaei/mijn-ista-api/pull/1
+_orig_authenticate = MijnIstaAPI.authenticate
+
+async def _authenticate_with_clean_jar(self) -> None:
+    self._session.cookie_jar.clear_domain("ista.nl")
+    self._session.cookie_jar.clear_domain("ista.com")
+    await _orig_authenticate(self)
+
+MijnIstaAPI.authenticate = _authenticate_with_clean_jar
+#### END WORKAROUND
+
 PLATFORMS = [Platform.SENSOR]
 
 _LOGGER = logging.getLogger(__name__)
