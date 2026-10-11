@@ -7,13 +7,63 @@ The community repository is `JoostHazelzet/mijn_ista_nl`, detached from the orig
 GitHub fork network with Git history preserved. Repository renaming does not change
 the Home Assistant domain `mijn_ista` or Python package import names.
 
+### 1.1 Architecture rule: raw measurements and Single Source of Truth
+
+**Mandatory design rule:** the integration's scope shall be strictly limited
+to fetching and publishing raw, atomic measured values from the Ista API.
+Users shall handle historical tracking and comparisons through the native
+Home Assistant Energy Dashboard, Utility Meters, or Grafana with a
+user-managed time-series backend.
+
+This rule governs all future features and refactors, not only the current
+implementation. The responsibility boundary is:
+
+| Layer | Owns | Shall not own |
+|---|---|---|
+| Ista API | Authoritative measured values and source metadata | Integration-generated substitutes for measurements |
+| Integration | Authentication, rate-limited acquisition, validation, lossless normalization, and publication of individual measurements with verified HA metadata | Historical storage/backfill, consolidation, rollups, comparisons, or estimation |
+| Home Assistant / user-managed tools | Recorder history, Energy Dashboard statistics, Utility Meter cycles, Grafana visualization and comparisons | A requirement for this integration to duplicate their analytics |
+
+In particular:
+
+- The integration shall publish measured registers unchanged in meaning.
+  A cumulative physical meter register is an atomic measurement and is
+  permitted; calculating a counter from period consumption is not.
+- Normalization shall preserve measurement meaning and precision. Formatting
+  source reading dates as `YYYY-MM-DD`, validating numeric values, and mapping
+  verified units and device classes are permitted. Missing data shall not
+  become invented readings or estimates.
+- Sensor states and attributes shall not expose annual/current/previous-year
+  totals, monthly metrics, sums across meters, year-over-year changes,
+  building averages, or historical datasets, even if supplied by the API.
+  Identity, source reading dates, and applicable reading-quality metadata
+  may accompany individual measurements.
+- The integration shall not fetch endpoints solely for excluded analytics.
+  Broader endpoint support in the standalone API packages does not expand
+  the Home Assistant integration's scope.
+- Feature proposals shall be evaluated against this rule. Requests for
+  history, rollups, and comparisons shall be implemented downstream rather
+  than added to the integration.
+
+This establishes the **Single Source of Truth** philosophy applied by this
+project to Home Assistant: Ista remains authoritative for measurements, while
+Home Assistant or the user's chosen backend owns recorded history and derived
+analytics. It aligns with modern Home Assistant integration and microservice
+design through separation of concerns, single responsibility, and avoiding
+duplicate statistics engines or competing consumption histories.
+
 ## 2. Current design summary
 The integration follows a standard Home Assistant pattern:
 - config entry setup in `custom_components/mijn_ista/__init__.py`
 - a single coordinator in `custom_components/mijn_ista/coordinator.py`
 - sensor entity generation in `custom_components/mijn_ista/sensor.py`
 
-The coordinator authenticates to the external API, fetches user data, and normalizes per-property `Cuid` data into typed structures. Sensors are then generated for annual and monthly consumption metrics with Home Assistant units and state classes. Outdoor-temperature data from KNMI is not used or exposed.
+The coordinator authenticates to the external API and extracts current raw meter
+registers from `UserValues` into typed per-property `Cuid` structures. It does
+not fetch monthly history or building averages, or normalize annual comparisons.
+Sensors expose atomic readings only. Home Assistant or external tools own
+historical tracking, rollups, and comparisons. Outdoor-temperature data from
+KNMI is not used or exposed.
 
 ### 2.1 Standalone API package (local testing stage)
 An independently installable package now lives in
@@ -48,30 +98,37 @@ See FR-9 and NFR-6 for the required transition.
 
 ## 3. Observed optimization opportunities
 
-### 3.1 Parallelize per-property API work
-The coordinator fetches per property data sequentially:
-- `get_consumption_averages(...)`
-- `get_month_values(...)`
-- parse and merge results
+### 3.1 Minimize API work
+One `UserValues` request supplies all properties and current meter readings.
+There is no per-property history fetch, shard polling, or averages request in
+the integration. The standalone API packages retain their broader endpoint
+support independently.
 
-This is safe but not ideal when the account contains many properties or a large number of services. A future improvement should collect per-Cuid work in parallel where the upstream API allows it, while respecting rate limits and avoiding excessive concurrent requests. Because the data is refreshed only every few hours, and NFR-5 requires at least 5 s between data requests, parallel fetching gains little. This is deprioritised; data requests stay sequential, and parallelism may only overlap local parsing with waiting.
+### 3.2 Normalize raw registers once
+The coordinator owns payload validation and date normalization. Sensors use
+direct service-and-meter lookups rather than recomputing derived values.
 
-### 3.2 Reduce repeated dictionary and service lookups
-In `sensor.py`, the sensor factory repeatedly resolves service metadata and building averages using multiple direct dictionary lookups and lambda closures. While this is readable, it creates repeated nested lookups during state and attribute generation. A future optimization should precompute a normalized service map and cache sensor metadata per service and per property.
+### 3.3 Keep attributes atomic
+Attributes contain only meter identity/type and the API reading date, normalized
+to `YYYY-MM-DD`. There are no history lists, period boundaries, or totals.
 
-### 3.3 Cache derived data for entity state attributes
-The entity `native_value` and `extra_state_attributes` properties recompute attributes from coordinator data on every HA state read. This is acceptable for a small integration, but if the data set grows or entities are updated frequently, it may become inefficient. A future improvement should consider caching derived static metadata per entity or reducing per-read work in the attribute calculation path.
+### 3.4 Handle partial readings explicitly
+Missing or invalid `EndValue` values must be unavailable, not zero. Missing
+meters are retained as unavailable entities and newly discovered meters are
+added on subsequent refreshes. Malformed response structures fail the refresh
+explicitly.
 
-### 3.4 Add more robust partial-data handling
-The coordinator already handles missing month values gracefully. The next phase should formalize the data contract for partial API responses and document exactly which sensors are unavailable or unknown under different outage scenarios, including partial authentication failures and incomplete billing periods.
-
-### 3.5 Tighten refresh strategy around startup and rate limits
-The coordinator intentionally uses a quick month fetch on first refresh, then full polling later. This is a solid optimization. The next requirement should be to document and test the startup behavior clearly, especially around the update interval and do-not-poll-faster-than-necessary guidance.
+### 3.5 Preserve startup and rate-limit policy
+The first refresh uses one login attempt without waiting for the login gate;
+later refreshes retain the established retry policy. Timeout budgets cover
+the data request and its possible reauthentication and retry.
 
 ista reports home energy consumption; the data is not time-critical. Refreshing every **6 hours** is sufficient (the current default is 24 hours). See FR-7 and NFR-5 for the refresh, login and request rate-limit policy.
 
 ### 3.6 Improve diagnostics and observability
-The repo includes diagnostics support, which is useful. Future work should add clearer structured logging around API failures, skipped months, and per-Cuid processing. This would make support and debugging much easier for users with multiple properties or irregular API responses.
+Diagnostics report raw meter counts and unclassified meter counts. Logging
+identifies invalid readings and unverified register metadata without dumping
+raw payloads.
 
 ### 3.7 Authentication reliability
 Authentication still fails intermittently despite the clean-cookie-jar workaround in `__init__.py` (aalaei/mijn-ista-api#1). Findings, reproduced with `notebooks/auth_playground.ipynb` against the live portal:
@@ -87,19 +144,31 @@ Authentication still fails intermittently despite the clean-cookie-jar workaroun
 ## 4. Functional requirements
 
 ### FR-1: Data refresh
-The integration shall authenticate and refresh consumption data for each configured property using the external `mijn.ista.nl` API.
+The integration shall authenticate and refresh raw, atomic measured values
+for each configured property using the external `mijn.ista.nl` API, within
+the architecture boundary defined in section 1.1.
 
 ### FR-2: Multi-property support
 The integration shall support accounts with multiple properties and create a distinct HA device grouping per `Cuid`.
 
 ### FR-3: Sensor generation
-The integration shall generate sensors for annual totals, monthly totals, and building averages. It shall not retrieve or expose outdoor-temperature data.
+The integration shall generate one sensor per physical meter using the raw
+`EndValue` register. It shall not generate service totals, monthly metrics,
+annual totals, comparisons, building averages, or outdoor-temperature sensors.
+Verified ultego energy and domaqua water registers shall use their physical
+units, appropriate device classes, and `total_increasing`. Unverified meter
+families shall remain raw, without inferred units or statistics metadata.
+New unique IDs shall prevent mixing register statistics with old period totals;
+only explicitly retired entity families shall be removed from the registry.
 
 ### FR-4: Locale handling
 The integration shall preserve Dutch service names in Dutch HA language settings and translate to English where appropriate when Home Assistant is configured in English.
 
 ### FR-5: Data resilience
-The integration shall continue to operate when a subset of monthly or averaged data is missing and shall surface unavailable state values instead of failing the whole entry.
+The integration shall tolerate missing individual readings, dates, and service
+metadata without substituting zero or publishing invented measurements.
+Invalid numeric readings shall be logged and unavailable; invalid dates shall
+be logged and omitted. Structural payload errors shall raise `UpdateFailed`.
 
 ### FR-6: Diagnostics support
 The integration shall expose enough diagnostic detail to help troubleshoot API issues without leaking sensitive credentials.
@@ -160,12 +229,15 @@ ista publishes no rate limits for `mijn.ista.nl` or `login.ista.com`. The limits
 **Data requests:**
 - Data requests to `mijn.ista.nl/api/*` shall start at least **5 seconds** apart, across all `mijn_ista` config entries. This covers `UserValues`, `ConsumptionAverages`, `ConsumptionValues`, every `MonthValues` shard poll, and the library's internal retries after HTTP 503 or 401.
 - The requests that make up a login are covered by the login limit and are not throttled individually.
-- The library polls `MonthValues` shards every 2 s within a 15 s budget (quick mode) or 60 s budget (full mode). With a 5 s gap this allows only about 3 or 12 polls, so the month polling interval and budgets shall be adjusted to the 5 s gap. This shall be done in the integration's own client or in the library, and verified so that full history still loads.
+- Standalone clients retain throttled `MonthValues` shard support. The raw-only
+  integration does not call this endpoint.
 
 **General:**
 - Waiting for the login gap shall not block Home Assistant startup. If a login is needed while the gap has not elapsed during setup, the integration shall reuse a still-valid session or defer setup (for example with `ConfigEntryNotReady`) rather than sleep.
 - The integration should minimise the number of logins. For example, it can reuse a still-valid session and log in only when ista rejects it. The session lifetime probe in `notebooks/auth_playground.ipynb` (section 4) checks whether a session survives a 6-hour interval.
-- The coordinator's refresh timeout shall cover the login attempts including their waits, plus all data requests at the 5 s spacing (month polling per property), instead of a fixed 100 seconds.
+- The coordinator's refresh timeout shall cover login attempts including waits,
+  the single `UserValues` request, and its possible HTTP 401 reauthentication
+  and data retry. It shall not budget per-property history polling.
 
 ### NFR-6: API isolation and adoption
 - Standalone packaging and tests shall not depend on Home Assistant, its pytest

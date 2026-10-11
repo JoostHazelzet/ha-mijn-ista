@@ -2,23 +2,19 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from homeassistant.core import HomeAssistant
 
 from custom_components.mijn_ista.coordinator import _parse_customer
 from custom_components.mijn_ista.diagnostics import async_get_config_entry_diagnostics
 
-from .conftest import MOCK_AVG_VALUES, MOCK_MONTH_VALUES, MOCK_USER_VALUES
+from .conftest import MOCK_USER_VALUES
 
 
 def _make_entry_with_coordinator(hass):
     """Return a mock config entry with a loaded coordinator."""
-    customer = _parse_customer(
-        MOCK_USER_VALUES["Cus"][0], MOCK_MONTH_VALUES, MOCK_AVG_VALUES
-    )
+    customer = _parse_customer(MOCK_USER_VALUES["Cus"][0])
     coordinator = MagicMock()
     coordinator.last_update_success = True
     coordinator.data = {"test-cuid-abc123": customer}
@@ -60,8 +56,11 @@ class TestDiagnostics:
         props = result["coordinator"]["properties"]
         prop = next(iter(props.values()))
         assert "services" in prop
-        assert "monthly_entries" in prop
-        assert prop["monthly_entries"] == 2
+        assert prop["meter_count"] == 2
+        assert prop["unclassified_meter_count"] == 0
+        assert "monthly_entries" not in prop
+        assert "annual_service_ids" not in prop
+        assert "building_average_service_ids" not in prop
 
     async def test_property_key_is_truncated_cuid(self, hass: HomeAssistant):
         entry = _make_entry_with_coordinator(hass)

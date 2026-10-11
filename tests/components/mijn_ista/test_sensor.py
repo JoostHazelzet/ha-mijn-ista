@@ -1,471 +1,280 @@
-"""Tests for mijn_ista sensor platform."""
+"""Tests for raw meter sensors and retirement of derived entities."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from copy import deepcopy
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.const import UnitOfEnergy, UnitOfVolume
-from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.mijn_ista.const import DOMAIN
-from custom_components.mijn_ista.coordinator import _parse_customer
+from custom_components.mijn_ista.coordinator import MijnIstaCoordinator, _parse_customer
 from custom_components.mijn_ista.sensor import (
-    MijnIstaSensor,
     _build_sensors,
-    _find_month,
-    _parse_dt,
+    _remove_stale_sensors,
     _translate_service,
     async_setup_entry,
 )
 
-from .conftest import MOCK_AVG_VALUES, MOCK_MONTH_VALUES, MOCK_USER_VALUES
-
-
-# ---------------------------------------------------------------------------
-# Unit helpers
-# ---------------------------------------------------------------------------
-
-
-class TestTranslateService:
-    def test_english_translates_verwarming(self):
-        assert _translate_service("Verwarming", "en") == "Heating"
-
-    def test_english_translates_warm_water(self):
-        assert _translate_service("Warm water", "en") == "Hot water"
-
-    def test_english_unknown_service_passes_through(self):
-        assert _translate_service("Zonnepanelen", "en") == "Zonnepanelen"
-
-    def test_dutch_passes_through(self):
-        assert _translate_service("Verwarming", "nl") == "Verwarming"
-
-    def test_german_passes_through(self):
-        assert _translate_service("Verwarming", "de") == "Verwarming"
-
-    def test_en_gb_locale_translates(self):
-        assert _translate_service("Verwarming", "en-GB") == "Heating"
-
-
-class TestFindMonth:
-    def test_returns_most_recent_entry_with_data(self):
-        from custom_components.mijn_ista.coordinator import MonthEntry, MonthServiceData
-        empty = MonthEntry(year=2024, month=12, services={})
-        has_data = MonthEntry(
-            year=2024, month=11,
-            services={1: MonthServiceData(service_id=1, total_consumption=4.2,
-                                          building_average=5.0, has_approximation=False,
-                                          device_consumptions=[])}
-        )
-        result = _find_month([empty, has_data], 1)
-        assert result is has_data
-
-    def test_returns_none_when_no_entry_has_data(self):
-        from custom_components.mijn_ista.coordinator import MonthEntry
-        empty = MonthEntry(year=2024, month=12, services={})
-        assert _find_month([empty], 99) is None
-
-    def test_returns_none_for_empty_list(self):
-        assert _find_month([], 1) is None
-
-    def test_skips_empty_first_month(self):
-        """Most recent month with empty services should be skipped."""
-        from custom_components.mijn_ista.coordinator import MonthEntry, MonthServiceData
-        current = MonthEntry(year=2024, month=12, services={})
-        prior = MonthEntry(
-            year=2024, month=11,
-            services={1: MonthServiceData(service_id=1, total_consumption=4.2,
-                                          building_average=5.0, has_approximation=False,
-                                          device_consumptions=[])}
-        )
-        result = _find_month([current, prior], 1)
-        assert result is prior
-
-
-class TestParseDt:
-    def test_valid_iso_string(self):
-        result = _parse_dt("2024-01-01T00:00:00")
-        assert isinstance(result, datetime)
-        assert result.tzinfo is not None  # UTC-aware
-
-    def test_empty_string_returns_none(self):
-        assert _parse_dt("") is None
-
-    def test_invalid_string_returns_none(self):
-        assert _parse_dt("not-a-date") is None
-
-
-# ---------------------------------------------------------------------------
-# Sensor factory
-# ---------------------------------------------------------------------------
-
-
-def _make_customer_data():
-    cus = MOCK_USER_VALUES["Cus"][0]
-    return _parse_customer(cus, MOCK_MONTH_VALUES, MOCK_AVG_VALUES)
-
-
-class TestBuildSensors:
-    @pytest.fixture
-    def coordinator(self, hass: HomeAssistant):
-        """Minimal coordinator stub for sensor factory tests."""
-        from unittest.mock import MagicMock
-        coord = MagicMock()
-        coord.hass = hass
-        coord.data = {"test-cuid-abc123": _make_customer_data()}
-        return coord
-
-    def test_returns_list_of_sensors(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        assert len(sensors) > 0
-        assert all(isinstance(s, MijnIstaSensor) for s in sensors)
-
-    def test_unique_ids_are_unique(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        uids = [s._attr_unique_id for s in sensors]
-        assert len(uids) == len(set(uids))
-
-    def test_unique_id_format(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        for s in sensors:
-            assert s._attr_unique_id.startswith(f"{DOMAIN}_test-cuid-abc123_")
-
-    def test_temperature_sensors_are_not_created(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        names = [s._attr_name for s in sensors]
-        assert "Temperature" not in names
-        assert "Temperature Previous" not in names
-        assert not any("avg_temp_" in s._attr_unique_id for s in sensors)
-
-    def test_annual_current_sensor_english(self, hass: HomeAssistant):
-        from unittest.mock import MagicMock
-        coord = MagicMock()
-        coord.hass = hass
-        hass.config.language = "en"
-        customer = _make_customer_data()
-        coord.data = {"test-cuid-abc123": customer}
-        sensors = _build_sensors(coord, "test-cuid-abc123", customer)
-        names = [s._attr_name for s in sensors]
-        assert "Heating Current" in names
-        assert "Hot water Current" in names
-
-    def test_annual_current_sensor_dutch(self, hass: HomeAssistant):
-        from unittest.mock import MagicMock
-        coord = MagicMock()
-        coord.hass = hass
-        hass.config.language = "nl"
-        customer = _make_customer_data()
-        coord.data = {"test-cuid-abc123": customer}
-        sensors = _build_sensors(coord, "test-cuid-abc123", customer)
-        names = [s._attr_name for s in sensors]
-        assert "Verwarming Current" in names
-        assert "Warm water Current" in names
-
-    def test_heating_sensor_has_energy_device_class(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        heating_current = next(
-            s for s in sensors if s._attr_name == "Heating Current"
-        )
-        assert heating_current._attr_device_class == SensorDeviceClass.ENERGY
-        assert heating_current._attr_native_unit_of_measurement == UnitOfEnergy.GIGA_JOULE
-
-    def test_water_sensor_has_water_device_class(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        water_current = next(
-            s for s in sensors if s._attr_name == "Hot water Current"
-        )
-        assert water_current._attr_device_class == SensorDeviceClass.WATER
-        assert water_current._attr_native_unit_of_measurement == UnitOfVolume.CUBIC_METERS
-
-    def test_change_sensor_uses_measurement_state_class(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        change = next(s for s in sensors if s._attr_name == "Heating Change")
-        assert change._attr_state_class == SensorStateClass.MEASUREMENT
-
-    def test_annual_sensor_uses_total_state_class(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        current = next(s for s in sensors if s._attr_name == "Heating Current")
-        assert current._attr_state_class == SensorStateClass.TOTAL
-
-    def test_building_avg_sensor_uses_measurement(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        avg = next(s for s in sensors if s._attr_name == "Heating Building Avg")
-        assert avg._attr_state_class == SensorStateClass.MEASUREMENT
-
-    def test_monthly_sensors_present(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        names = [s._attr_name for s in sensors]
-        assert "Heating Month" in names
-        assert "Heating Month Avg" in names
-
-    def test_monthly_sensors_created_when_first_month_is_empty(
-        self, hass: HomeAssistant
-    ):
-        """Monthly sensors must be created even if monthly[0] has no ServiceConsumptions."""
-        import copy
-        from unittest.mock import MagicMock
-        from custom_components.mijn_ista.coordinator import MonthEntry
-
-        # Prepend a current-month entry with no service data (in-progress month)
-        cus = MOCK_USER_VALUES["Cus"][0]
-        month_data = copy.deepcopy(MOCK_MONTH_VALUES)
-        month_data["mc"].insert(0, {"y": 2024, "m": 12, "ServiceConsumptions": []})
-        customer = _parse_customer(cus, month_data, MOCK_AVG_VALUES)
-
-        # monthly[0] is now December with empty services
-        assert customer.monthly[0].month == 12
-        assert customer.monthly[0].services == {}
-
-        coord = MagicMock()
-        coord.hass = hass
-        coord.data = {"test-cuid-abc123": customer}
-
-        sensors = _build_sensors(coord, "test-cuid-abc123", customer)
-        names = [s._attr_name for s in sensors]
-        assert "Heating Month" in names
-        assert "Heating Month Avg" in names
-
-    def test_monthly_sensor_value_skips_empty_first_month(self, hass: HomeAssistant):
-        """native_value for Month sensor must use the most recent month with data."""
-        import copy
-        from unittest.mock import MagicMock
-
-        cus = MOCK_USER_VALUES["Cus"][0]
-        month_data = copy.deepcopy(MOCK_MONTH_VALUES)
-        month_data["mc"].insert(0, {"y": 2024, "m": 12, "ServiceConsumptions": []})
-        customer = _parse_customer(cus, month_data, MOCK_AVG_VALUES)
-
-        coord = MagicMock()
-        coord.hass = hass
-        coord.data = {"test-cuid-abc123": customer}
-
-        sensors = _build_sensors(coord, "test-cuid-abc123", customer)
-        month_sensor = next(s for s in sensors if s._attr_name == "Heating Month")
-        # Should return Nov 2024 value (4.2), not None from empty Dec entry
-        assert month_sensor.native_value == 4.2
-
-
-# ---------------------------------------------------------------------------
-# MijnIstaSensor.native_value
-# ---------------------------------------------------------------------------
-
-
-class TestSensorNativeValue:
-    @pytest.fixture
-    def coordinator(self, hass: HomeAssistant):
-        from unittest.mock import MagicMock
-        coord = MagicMock()
-        coord.hass = hass
-        coord.data = {"test-cuid-abc123": _make_customer_data()}
-        return coord
-
-    def test_annual_current_value(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        current = next(s for s in sensors if s._attr_name == "Heating Current")
-        assert current.native_value == 42.5
-
-    def test_annual_previous_value(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        previous = next(s for s in sensors if s._attr_name == "Heating Previous")
-        assert previous.native_value == 48.0
-
-    def test_change_pct_value(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        change = next(s for s in sensors if s._attr_name == "Heating Change")
-        assert change.native_value == -11.5
-
-    def test_monthly_value(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        month = next(s for s in sensors if s._attr_name == "Heating Month")
-        assert month.native_value == 4.2
-
-    def test_returns_none_when_coordinator_data_empty(self, coordinator):
-        coordinator.data = {}
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        current = next(s for s in sensors if s._attr_name == "Heating Current")
-        # coordinator.data is now {} — cuid not found
-        assert current.native_value is None
-
-    def test_returns_none_when_coordinator_data_is_none(self, coordinator):
-        coordinator.data = None
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        current = next(s for s in sensors if s._attr_name == "Heating Current")
-        assert current.native_value is None
-
-
-# ---------------------------------------------------------------------------
-# last_reset
-# ---------------------------------------------------------------------------
-
-
-class TestLastReset:
-    @pytest.fixture
-    def coordinator(self, hass: HomeAssistant):
-        from unittest.mock import MagicMock
-        coord = MagicMock()
-        coord.hass = hass
-        coord.data = {"test-cuid-abc123": _make_customer_data()}
-        return coord
-
-    def test_annual_current_last_reset(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        current = next(s for s in sensors if s._attr_name == "Heating Current")
-        lr = current.last_reset
-        assert lr is not None
-        assert isinstance(lr, datetime)
-        assert lr.year == 2024
-        assert lr.month == 1
-        assert lr.day == 1
-
-    def test_monthly_last_reset_is_first_of_month(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        month_sensor = next(s for s in sensors if s._attr_name == "Heating Month")
-        lr = month_sensor.last_reset
-        assert lr is not None
-        assert lr == datetime(2024, 11, 1, tzinfo=timezone.utc)
-
-    def test_measurement_sensor_has_no_last_reset(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        change = next(s for s in sensors if s._attr_name == "Heating Change")
-        assert change.last_reset is None
-
-# ---------------------------------------------------------------------------
-# extra_state_attributes
-# ---------------------------------------------------------------------------
-
-
-class TestExtraStateAttributes:
-    @pytest.fixture
-    def coordinator(self, hass: HomeAssistant):
-        from unittest.mock import MagicMock
-        coord = MagicMock()
-        coord.hass = hass
-        coord.data = {"test-cuid-abc123": _make_customer_data()}
-        return coord
-
-    def test_annual_current_has_period_dates(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        current = next(s for s in sensors if s._attr_name == "Heating Current")
-        attrs = current.extra_state_attributes
-        assert "period_start" in attrs
-        assert "period_end" in attrs
-        assert "meters" in attrs
-
-    def test_monthly_has_prior_months(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        month = next(s for s in sensors if s._attr_name == "Heating Month")
-        attrs = month.extra_state_attributes
-        assert "prior_months" in attrs
-        assert "month" in attrs
-
-# ---------------------------------------------------------------------------
-# Stale sensor cleanup
-# ---------------------------------------------------------------------------
-
-
-class TestRemoveStaleSensors:
-    """ista dropped per-device breakdown from MonthValues; orphaned
-    "<meter> Month" and retired temperature sensors must be removed from the
-    entity registry, not just left showing Unavailable.
-    """
-
-    async def test_removes_entity_no_longer_produced(self, hass: HomeAssistant):
-        from unittest.mock import MagicMock
-
-        from homeassistant.helpers import entity_registry as er
-        from pytest_homeassistant_custom_component.common import MockConfigEntry
-
-        entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
-        entry.add_to_hass(hass)
-
-        ent_reg = er.async_get(hass)
-        stale = ent_reg.async_get_or_create(
-            "sensor",
-            DOMAIN,
-            f"{DOMAIN}_test-cuid-abc123_svc6_dev999999_month",
-            config_entry=entry,
-        )
-        stale_temperature = ent_reg.async_get_or_create(
-            "sensor",
-            DOMAIN,
-            f"{DOMAIN}_test-cuid-abc123_avg_temp_current_period",
-            config_entry=entry,
-        )
-        stale_previous_temperature = ent_reg.async_get_or_create(
-            "sensor",
-            DOMAIN,
-            f"{DOMAIN}_test-cuid-abc123_avg_temp_previous_period",
-            config_entry=entry,
-        )
-        kept_annual = ent_reg.async_get_or_create(
-            "sensor",
-            DOMAIN,
-            f"{DOMAIN}_test-cuid-abc123_svc6_dev999999_annual",
-            config_entry=entry,
-        )
-
-        coord = MagicMock()
-        coord.hass = hass
-        coord.data = {"test-cuid-abc123": _make_customer_data()}
-        entry.runtime_data = coord
-
-        await async_setup_entry(hass, entry, MagicMock())
-
-        assert ent_reg.async_get(stale.entity_id) is None
-        assert ent_reg.async_get(stale_temperature.entity_id) is None
-        assert ent_reg.async_get(stale_previous_temperature.entity_id) is None
-        assert ent_reg.async_get(kept_annual.entity_id) is not None
-
-    async def test_keeps_entity_still_produced_this_session(self, hass: HomeAssistant):
-        """A per-meter month entity that IS still produced must not be touched."""
-        from unittest.mock import MagicMock
-
-        from homeassistant.helpers import entity_registry as er
-        from pytest_homeassistant_custom_component.common import MockConfigEntry
-
-        customer = _make_customer_data()
-        sensors = _build_sensors(MagicMock(hass=hass), "test-cuid-abc123", customer)
-        still_produced = next(
-            s for s in sensors if s._attr_unique_id.endswith("_month") and "_dev" in s._attr_unique_id
-        )
-
-        entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
-        entry.add_to_hass(hass)
-
-        ent_reg = er.async_get(hass)
-        existing = ent_reg.async_get_or_create(
-            "sensor", DOMAIN, still_produced._attr_unique_id, config_entry=entry
-        )
-
-        coord = MagicMock()
-        coord.hass = hass
-        coord.data = {"test-cuid-abc123": customer}
-        entry.runtime_data = coord
-
-        await async_setup_entry(hass, entry, MagicMock())
-
-        assert ent_reg.async_get(existing.entity_id) is not None
+from .conftest import MOCK_USER_VALUES
+
+CUID = "test-cuid-abc123"
+
+
+@pytest.fixture
+def coordinator(hass):
+    coord = MagicMock()
+    coord.hass = hass
+    coord.last_update_success = True
+    coord.data = {CUID: _parse_customer(deepcopy(MOCK_USER_VALUES["Cus"][0]))}
+    return coord
+
+
+def sensors(coordinator):
+    return _build_sensors(coordinator, CUID, coordinator.data[CUID])
+
+
+@pytest.mark.parametrize(
+    ("description", "language", "expected"),
+    [
+        ("Verwarming", "en", "Heating"),
+        ("Warm water", "en-GB", "Hot water"),
+        ("Verwarming", "nl", "Verwarming"),
+        ("Verwarming", "de", "Verwarming"),
+        ("Zonnepanelen", "en", "Zonnepanelen"),
+    ],
+)
+def test_translation(description, language, expected):
+    assert _translate_service(description, language) == expected
+
+
+def test_one_sensor_per_meter_no_derived_sensors(coordinator):
+    built = sensors(coordinator)
+    assert len(built) == 2
+    assert {s.unique_id for s in built} == {
+        f"{DOMAIN}_{CUID}_svc1_dev101_reading",
+        f"{DOMAIN}_{CUID}_svc2_dev201_reading",
+    }
+
+
+@pytest.mark.parametrize(
+    ("language", "expected"),
+    [
+        ("en", ["Heating 12345", "Hot water 67890"]),
+        ("nl", ["Verwarming 12345", "Warm water 67890"]),
+    ],
+)
+def test_sensor_names(coordinator, language, expected):
+    coordinator.hass.config.language = language
+    assert [s.name for s in sensors(coordinator)] == expected
+
+
+def test_energy_and_water_metadata(coordinator):
+    heating, water = sensors(coordinator)
+    assert heating.device_class == SensorDeviceClass.ENERGY
+    assert heating.native_unit_of_measurement == UnitOfEnergy.GIGA_JOULE
+    assert water.device_class == SensorDeviceClass.WATER
+    assert water.native_unit_of_measurement == UnitOfVolume.CUBIC_METERS
+    for sensor in (heating, water):
+        assert sensor.state_class == SensorStateClass.TOTAL_INCREASING
+        assert sensor.last_reset is None
+
+
+def test_kwh_metadata(coordinator):
+    raw = deepcopy(MOCK_USER_VALUES["Cus"][0])
+    raw["curConsumption"]["Billingservices"][0]["Unit"] = "kWh"
+    coordinator.data[CUID] = _parse_customer(raw)
+    heating = sensors(coordinator)[0]
+    assert heating.native_unit_of_measurement == UnitOfEnergy.KILO_WATT_HOUR
+    assert heating.device_class == SensorDeviceClass.ENERGY
+    assert heating.state_class == SensorStateClass.TOTAL_INCREASING
+
+
+def test_unverified_type_remains_raw_and_unclassified(coordinator, caplog):
+    raw = deepcopy(MOCK_USER_VALUES["Cus"][0])
+    raw["curConsumption"]["Billingservices"][0]["MeterType"] = "HCA"
+    coordinator.data[CUID] = _parse_customer(raw)
+    sensor = sensors(coordinator)[0]
+    assert sensor.native_value == 42.5
+    assert sensor.native_unit_of_measurement is None
+    assert sensor.device_class is None
+    assert sensor.state_class is None
+    assert "unverified register" in caplog.text
+
+
+def test_statistics_metadata_tracks_partial_service_metadata(coordinator):
+    sensor = sensors(coordinator)[0]
+    raw = deepcopy(MOCK_USER_VALUES["Cus"][0])
+    raw["curConsumption"]["Billingservices"] = []
+    coordinator.data[CUID] = _parse_customer(raw)
+    assert sensor.native_value == 42.5
+    assert sensor.native_unit_of_measurement is None
+    assert sensor.device_class is None
+    assert sensor.state_class is None
+    coordinator.data[CUID] = _parse_customer(MOCK_USER_VALUES["Cus"][0])
+    assert sensor.device_class == SensorDeviceClass.ENERGY
+    assert sensor.state_class == SensorStateClass.TOTAL_INCREASING
+
+
+def test_raw_register_not_period_consumption(coordinator):
+    raw = deepcopy(MOCK_USER_VALUES["Cus"][0])
+    meter = raw["curConsumption"]["ServicesComp"][0]["CurMeters"][0]
+    meter.update(BeginValue=31.286, EndValue=31.335, CValue=0.049, EsDate="07-10-2026")
+    coordinator.data[CUID] = _parse_customer(raw)
+    sensor = sensors(coordinator)[0]
+    assert sensor.native_value == 31.335
+    assert sensor.extra_state_attributes == {
+        "meter_id": 101,
+        "serial_nr": "12345",
+        "meter_type": "ultego III smart - optosonic",
+        "reading_date": "2026-10-07",
+    }
+
+
+def test_bill_rollover_does_not_reset_register(coordinator):
+    raw = deepcopy(MOCK_USER_VALUES["Cus"][0])
+    meter = raw["curConsumption"]["ServicesComp"][0]["CurMeters"][0]
+    meter.update(BeginValue=31, EndValue=32, CValue=1)
+    coordinator.data[CUID] = _parse_customer(raw)
+    sensor = sensors(coordinator)[0]
+    assert sensor.native_value == 32
+    meter.update(BeginValue=32, EndValue=32.5, CValue=0.5)
+    coordinator.data[CUID] = _parse_customer(raw)
+    assert sensor.native_value == 32.5
+    assert sensor.last_reset is None
+    meter.update(EndValue=0.1)
+    coordinator.data[CUID] = _parse_customer(raw)
+    assert sensor.native_value == 0.1
+    assert sensor.state_class == SensorStateClass.TOTAL_INCREASING
+
+
+@pytest.mark.parametrize("data", [{}, None])
+def test_missing_property_unavailable(coordinator, data):
+    sensor = sensors(coordinator)[0]
+    coordinator.data = data
+    assert sensor.native_value is None
+    assert not sensor.available
+    assert sensor.extra_state_attributes == {}
+
+
+def test_missing_meter_unavailable_and_recovers(coordinator):
+    sensor = sensors(coordinator)[0]
+    reading = coordinator.data[CUID].meters.pop((1, 101))
+    assert not sensor.available
+    assert sensor.native_value is None
+    coordinator.data[CUID].meters[(1, 101)] = reading
+    assert sensor.available
+
+
+def test_invalid_value_unavailable(coordinator):
+    raw = deepcopy(MOCK_USER_VALUES["Cus"][0])
+    raw["curConsumption"]["ServicesComp"][0]["CurMeters"][0]["EndValue"] = None
+    coordinator.data[CUID] = _parse_customer(raw)
+    sensor = sensors(coordinator)[0]
+    assert sensor.native_value is None
+    assert not sensor.available
+
+
+def test_failed_update_unavailable(coordinator):
+    sensor = sensors(coordinator)[0]
+    coordinator.last_update_success = False
+    assert not sensor.available
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "svc1_annual_current",
+        "svc1_annual_previous",
+        "svc1_annual_diff_pct",
+        "svc1_building_avg_annual",
+        "svc1_month_latest",
+        "svc1_month_building_avg",
+        "svc1_dev101_annual",
+        "svc1_dev101_month",
+        "avg_temp_current_period",
+        "avg_temp_previous_period",
+    ],
+)
+async def test_retired_sensor_cleanup(hass, suffix):
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    registry = er.async_get(hass)
+    retired = registry.async_get_or_create(
+        "sensor", DOMAIN, f"{DOMAIN}_{CUID}_{suffix}", config_entry=entry
+    )
+    kept = registry.async_get_or_create(
+        "sensor", DOMAIN, f"{DOMAIN}_{CUID}_svc1_dev101_reading", config_entry=entry
+    )
+    other = registry.async_get_or_create(
+        "sensor", DOMAIN, f"{DOMAIN}_{CUID}_unrelated_month", config_entry=entry
+    )
+    _remove_stale_sensors(hass, entry)
+    assert registry.async_get(retired.entity_id) is None
+    assert registry.async_get(kept.entity_id) is not None
+    assert registry.async_get(other.entity_id) is not None
+
+
+async def test_cleanup_does_not_touch_other_config_entry(hass):
+    own = MockConfigEntry(domain=DOMAIN, data={})
+    other = MockConfigEntry(domain=DOMAIN, data={})
+    own.add_to_hass(hass)
+    other.add_to_hass(hass)
+    registry = er.async_get(hass)
+    kept = registry.async_get_or_create(
+        "sensor", DOMAIN, f"{DOMAIN}_{CUID}_svc1_annual_current", config_entry=other
+    )
+    _remove_stale_sensors(hass, own)
+    assert registry.async_get(kept.entity_id) is not None
+
+
+async def test_late_meters_added_without_duplicates(hass):
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    coord = MijnIstaCoordinator(hass, entry, MagicMock())
+    entry.runtime_data = coord
+    coord.async_set_updated_data({})
+    add_entities = MagicMock()
+    await async_setup_entry(hass, entry, add_entities)
+    add_entities.assert_not_called()
+    customer = _parse_customer(deepcopy(MOCK_USER_VALUES["Cus"][0]))
+    coord.async_set_updated_data({CUID: customer})
+    assert add_entities.call_count == 1
+    assert len(add_entities.call_args.args[0]) == 2
+    coord.async_set_updated_data({})
+    coord.async_set_updated_data({CUID: customer})
+    assert add_entities.call_count == 1
+
+
+async def test_real_sensor_states_and_metadata(hass):
+    """Validate published HA states, not just entity properties."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=2,
+        data={"username": "test@example.com", "password": "secret"},
+    )
+    entry.add_to_hass(hass)
+    raw = deepcopy(MOCK_USER_VALUES["Cus"][0])
+    meter = raw["curConsumption"]["ServicesComp"][0]["CurMeters"][0]
+    meter.update(BeginValue=31.286, EndValue=31.335, CValue=0.049, EsDate="07-10-2026")
+    api = MagicMock()
+    api.authenticate = AsyncMock()
+    api.get_user_values = AsyncMock(return_value={"Cus": [raw]})
+    with patch("custom_components.mijn_ista.ResilientMijnIstaAPI", return_value=api):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    states = hass.states.async_all("sensor")
+    assert len(states) == 2
+    heating = next(s for s in states if s.attributes.get("meter_id") == 101)
+    assert float(heating.state) == 31.335
+    assert heating.attributes["state_class"] == "total_increasing"
+    assert heating.attributes["device_class"] == "energy"
+    assert heating.attributes["unit_of_measurement"] == "GJ"
+    assert heating.attributes["reading_date"] == "2026-10-07"
+    assert "last_reset" not in heating.attributes
+    assert "prior_months" not in heating.attributes
+    assert await hass.config_entries.async_unload(entry.entry_id)

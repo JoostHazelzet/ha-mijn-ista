@@ -29,13 +29,13 @@ MOCK_USER_VALUES: dict = {
                     {
                         "Id": 1,
                         "Description": "Verwarming",
-                        "MeterType": "HCA",
+                        "MeterType": "ultego III smart - optosonic",
                         "Unit": "Gigajoule",
                     },
                     {
                         "Id": 2,
                         "Description": "Warm water",
-                        "MeterType": "WW",
+                        "MeterType": "domaqua warm",
                         "Unit": "m3",
                     },
                 ],

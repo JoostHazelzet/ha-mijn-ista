@@ -3,7 +3,7 @@
 [![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![GitHub release](https://img.shields.io/github/v/release/JoostHazelzet/mijn_ista_nl)](https://github.com/JoostHazelzet/mijn_ista_nl/releases)
 
-Home Assistant integration for [mijn.ista.nl](https://mijn.ista.nl) — the Dutch ista energy monitoring portal. Exposes your heating, hot/cold water, electricity, and gas consumption as sensors you can track, automate, and display on your dashboard.
+Home Assistant integration for [mijn.ista.nl](https://mijn.ista.nl) — the Dutch ista energy monitoring portal. Fetches and publishes raw, atomic meter readings as sensors; historical tracking and consumption analysis belong to Home Assistant or your chosen analytics tools.
 
 ---
 
@@ -23,19 +23,56 @@ Home Assistant integration for [mijn.ista.nl](https://mijn.ista.nl) — the Dutc
 
 ## What it does
 
-Reads your consumption data from mijn.ista.nl and creates sensors in Home Assistant for every service (Heating, Electricity, Hot water, Cold water, Gas — whatever your property has):
+Reads the current raw meter registers from mijn.ista.nl and creates one sensor
+per physical meter. No service totals, monthly or annual rollups, historical
+attributes, year-over-year comparisons, or building averages are calculated or
+published.
 
 | Sensor | What it shows |
 |---|---|
-| `{Service} Current` | Annual total for the current billing year |
-| `{Service} Previous` | Annual total for the previous billing year |
-| `{Service} Change` | Year-over-year change in % |
-| `{Service} Building Avg` | Average consumption across your building |
-| `{Service} {serial}` | Annual reading for one physical meter |
-| `{Service} Month` | Latest month's total (prior months in attributes) |
-| `{Service} Month Avg` | Latest month's building average |
-| `{Service} {serial} Month` | Latest month for one physical meter |
+| `{Service} {serial}` | Current raw meter register (`EndValue`), not period consumption (`CValue`) |
+
 All sensors are grouped under a single **ista NL** device per property in the Home Assistant device registry.
+Use Home Assistant's Energy Dashboard, Utility Meters, or Grafana for historical
+tracking and comparisons.
+
+---
+
+## Architecture rule: raw measurements only
+
+> **The integration's scope is strictly limited to fetching and publishing raw,
+> atomic measured values from the Ista API. Users handle historical tracking
+> and comparisons using the native Home Assistant Energy Dashboard, Utility
+> Meters, or Grafana.**
+
+This is a design constraint, not just the current feature set. Future changes
+must preserve this boundary:
+
+- **Ista is the single source of truth for measurements.** Publish the API's
+  measured register values without replacing them with calculated consumption,
+  synthetic counters, estimates, or consolidated service totals.
+- **The integration is a thin acquisition adapter.** Its responsibilities are
+  authentication, rate-limited fetching, validation, lossless normalization
+  (such as `YYYY-MM-DD` dates), and publishing entities with verified units and
+  Home Assistant metadata. Meter identity and reading-quality metadata may
+  accompany a measurement; historical datasets may not.
+- **History and analytics belong downstream.** Home Assistant Recorder and the
+  Energy Dashboard own native historical statistics; Utility Meters own
+  user-configured consumption cycles; Grafana can visualize and compare data
+  stored in a user-managed time-series backend.
+
+Annual or monthly totals, rollups across meters, year-over-year changes,
+building averages, and historical attributes are explicitly out of scope,
+even when the API offers them. Publishing a cumulative physical meter register
+is allowed: it is an atomic source measurement, not an integration-generated
+rollup.
+
+This follows the **Single Source of Truth** philosophy we apply to Home
+Assistant and the separation-of-concerns and single-responsibility principles
+used in modern Home Assistant integrations and microservice architecture.
+It avoids duplicating Home Assistant's statistics engine or creating competing
+versions of consumption history. See the
+[architecture requirements](REQUIREMENTS.md#11-architecture-rule-raw-measurements-and-single-source-of-truth).
 
 ---
 
@@ -88,26 +125,44 @@ The update interval can be changed later via **Settings → Devices & Services �
 
 ## Sensors in detail
 
-### Annual sensors
+### Raw readings and statistics
 
-The annual sensors show consumption for the current and previous billing year. The `Change` sensor is the relative difference in percent (positive = more consumption, negative = less).
+The integration extracts `CurMeters[].EndValue` from `UserValues`. It does not
+subtract the beginning reading or sum meters, and does not request monthly
+history or building averages. API values are already decimal numbers; `DecPos`
+does not rescale them.
 
-Attributes on `{Service} Current` include the individual meter readings that make up the total.
+Verified physical register families are currently **ultego** heat meters (GJ or
+kWh, `device_class: energy`) and **domaqua** water meters (m³,
+`device_class: water`). These use `state_class: total_increasing`, enabling
+Home Assistant consumption statistics and selection in the applicable Energy
+Dashboard section. There is no billing-period `last_reset`: a billing rollover
+does not reset a physical register.
 
-### Monthly sensors
+Other meter types, missing service metadata, and unknown units remain visible as
+raw values **without an inferred unit, device class, or state class**. In
+particular, heat-cost allocator registers must not inherit a service's GJ unit.
+These sensors are not Energy Dashboard sources until their register semantics
+are verified. Electricity and gas meter families have not yet been verified.
 
-The `{Service} Month` sensor holds the most recent month's value. All prior months are available as attributes in the format:
+Attributes contain only meter identity, meter type, and `reading_date` when
+provided. Dates are normalized to **`YYYY-MM-DD`**, without inventing a time or
+timezone. Missing or invalid readings become unavailable, never zero. Meters
+that first appear in a later refresh are added automatically.
 
-```
-attributes:
-  2024-01: 42.3
-  2024-02: 38.1
-  ...
-```
+### Upgrading from period-based sensors
 
-### Building averages
+Raw-reading sensors use new unique IDs ending in `_reading`, rather than
+reusing annual-consumption IDs. The old annual, monthly, comparison, building
+average, and previously retired temperature entities are removed from the
+entity registry. Existing recorder history is not rewritten or transferred;
+update dashboards, automations, Utility Meters, and Energy Dashboard selections
+to use the new sensors. Entity IDs may receive a suffix if an old name is still
+reserved when the new entity is registered.
 
-Building average sensors show the average consumption for your entire building or complex during the same period. Useful for comparing your own usage against your neighbours.
+Home Assistant records readings from installation onward. This integration
+does not backfill historical measurements, and delayed API updates cannot
+provide precise daily or hourly consumption attribution.
 
 ---
 

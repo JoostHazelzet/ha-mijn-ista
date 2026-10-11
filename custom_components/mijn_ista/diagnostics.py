@@ -26,9 +26,8 @@ async def async_get_config_entry_diagnostics(
                 {"id": s.id, "description": s.description, "unit": s.unit}
                 for s in c.services
             ],
-            "monthly_entries": len(c.monthly),
-            "annual_service_ids": list(c.annual.keys()),
-            "building_average_service_ids": list(c.building_averages.keys()),
+            "meter_count": len(c.meters),
+            "unclassified_meter_count": sum(m.unit is None for m in c.meters.values()),
         }
 
     return async_redact_data(

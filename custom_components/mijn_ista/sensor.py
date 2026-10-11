@@ -1,10 +1,9 @@
-"""Sensor platform for mijn.ista.nl."""
+"""Raw meter reading sensors for mijn.ista.nl."""
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
-from datetime import datetime, timezone
+import re
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -13,12 +12,8 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import (
-    PERCENTAGE,
-    UnitOfEnergy,
-    UnitOfVolume,
-)
-from homeassistant.core import HomeAssistant
+from homeassistant.const import UnitOfEnergy, UnitOfVolume
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity_registry import (
@@ -28,62 +23,46 @@ from homeassistant.helpers.entity_registry import (
     async_get as async_get_entity_registry,
 )
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, MANUFACTURER, SERVICE_NAME_TRANSLATIONS
-from .coordinator import CustomerData, MijnIstaCoordinator, MonthEntry
+from .coordinator import CustomerData, MeterReading, MijnIstaCoordinator
 
 PARALLEL_UPDATES = 0
-
 _LOGGER = logging.getLogger(__name__)
 
-# Map API unit strings → HA unit constants
 _UNIT_MAP: dict[str, str] = {
     "Gigajoule": UnitOfEnergy.GIGA_JOULE,
     "kWh": UnitOfEnergy.KILO_WATT_HOUR,
     "m3": UnitOfVolume.CUBIC_METERS,
     "m³": UnitOfVolume.CUBIC_METERS,
 }
-
-# Map API unit strings → HA SensorDeviceClass
-_DEVICE_CLASS_MAP: dict[str, SensorDeviceClass | None] = {
+_DEVICE_CLASS_MAP: dict[str, SensorDeviceClass] = {
     "Gigajoule": SensorDeviceClass.ENERGY,
     "kWh": SensorDeviceClass.ENERGY,
     "m3": SensorDeviceClass.WATER,
     "m³": SensorDeviceClass.WATER,
 }
+_OBSOLETE_SENSOR = re.compile(
+    rf"{DOMAIN}_.+_(?:"
+    r"svc\d+_(?:annual_current|annual_previous|annual_diff_pct|"
+    r"building_avg_annual|month_latest|month_building_avg|dev\d+_(?:annual|month))"
+    r"|avg_temp_(?:current|previous)_period)"
+)
 
 
 def _translate_service(description: str, ha_language: str) -> str:
-    """Return English service name when HA language is English, otherwise pass through."""
+    """Preserve existing Dutch/English service naming."""
     if ha_language.startswith("en"):
         return SERVICE_NAME_TRANSLATIONS.get(description, description)
     return description
 
 
-def _ha_unit(api_unit: str) -> str | None:
-    return _UNIT_MAP.get(api_unit)
+def _unique_id(cuid: str, meter: MeterReading) -> str:
+    return f"{DOMAIN}_{cuid}_svc{meter.service_id}_dev{meter.meter_id}_reading"
 
 
-def _ha_device_class(api_unit: str) -> SensorDeviceClass | None:
-    return _DEVICE_CLASS_MAP.get(api_unit)
-
-
-def _parse_dt(date_str: str) -> datetime | None:
-    """Parse an API ISO date string to a UTC-aware datetime, or None."""
-    if not date_str:
-        return None
-    dt = dt_util.parse_datetime(date_str)
-    return dt_util.as_utc(dt) if dt else None
-
-
-def _find_month(monthly: list[MonthEntry], service_id: int) -> MonthEntry | None:
-    """Return the most recent MonthEntry that has data for service_id."""
-    return next((me for me in monthly if service_id in me.services), None)
-
-
-class MijnIstaSensor(CoordinatorEntity, SensorEntity):
-    """A single mijn.ista.nl sensor backed by MijnIstaCoordinator."""
+class MijnIstaSensor(CoordinatorEntity[MijnIstaCoordinator], SensorEntity):
+    """One physical meter's current register, with no derived consumption."""
 
     _attr_has_entity_name = True
 
@@ -91,25 +70,31 @@ class MijnIstaSensor(CoordinatorEntity, SensorEntity):
         self,
         coordinator: MijnIstaCoordinator,
         cuid: str,
-        unique_id_suffix: str,
-        name: str,
-        unit: str | None,
-        device_class: SensorDeviceClass | None,
-        state_class: SensorStateClass | None,
-        value_fn: Callable[[CustomerData], Any],
-        attrs_fn: Callable[[CustomerData], dict[str, Any]] | None = None,
-        last_reset_fn: Callable[[CustomerData], datetime | None] | None = None,
+        meter: MeterReading,
+        label: str,
     ) -> None:
         super().__init__(coordinator)
         self._cuid = cuid
-        self._value_fn = value_fn
-        self._attrs_fn = attrs_fn
-        self._last_reset_fn = last_reset_fn
-        self._attr_unique_id = f"{DOMAIN}_{cuid}_{unique_id_suffix}"
-        self._attr_name = name
-        self._attr_native_unit_of_measurement = unit
-        self._attr_device_class = device_class
-        self._attr_state_class = state_class
+        self._key = (meter.service_id, meter.meter_id)
+        self._attr_unique_id = _unique_id(cuid, meter)
+        self._attr_name = f"{label} {meter.serial_nr or meter.meter_id}"
+        if meter.unit is None:
+            _LOGGER.warning(
+                "mijn.ista.nl: service %s meter %s has an unverified register "
+                "type or unit; publishing without statistics metadata",
+                meter.service_id,
+                meter.meter_id,
+            )
+
+    @property
+    def _reading(self) -> MeterReading | None:
+        customer = (self.coordinator.data or {}).get(self._cuid)
+        return customer.meters.get(self._key) if customer else None
+
+    @property
+    def available(self) -> bool:
+        reading = self._reading
+        return super().available and reading is not None and reading.value is not None
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -123,346 +108,62 @@ class MijnIstaSensor(CoordinatorEntity, SensorEntity):
         )
 
     @property
-    def native_value(self) -> Any:
-        if not self.coordinator.data:
-            return None
-        customer = self.coordinator.data.get(self._cuid)
-        if customer is None:
-            return None
-        try:
-            return self._value_fn(customer)
-        except (KeyError, IndexError, TypeError, AttributeError):
-            return None
+    def native_value(self) -> float | None:
+        reading = self._reading
+        return reading.value if reading else None
+
+    @property
+    def native_unit_of_measurement(self) -> str | None:
+        reading = self._reading
+        return _UNIT_MAP.get(reading.unit or "") if reading else None
+
+    @property
+    def device_class(self) -> SensorDeviceClass | None:
+        reading = self._reading
+        return _DEVICE_CLASS_MAP.get(reading.unit or "") if reading else None
+
+    @property
+    def state_class(self) -> SensorStateClass | None:
+        return (
+            SensorStateClass.TOTAL_INCREASING if self.device_class is not None else None
+        )
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        if not self.coordinator.data or self._attrs_fn is None:
+        reading = self._reading
+        if reading is None:
             return {}
-        customer = self.coordinator.data.get(self._cuid)
-        if customer is None:
-            return {}
-        try:
-            return self._attrs_fn(customer)
-        except (KeyError, IndexError, TypeError, AttributeError):
-            return {}
-
-    @property
-    def last_reset(self) -> datetime | None:
-        """Return the time when the sensor was last reset, for TOTAL state class sensors."""
-        if self._last_reset_fn is None:
-            return None
-        if not self.coordinator.data:
-            return None
-        customer = self.coordinator.data.get(self._cuid)
-        if customer is None:
-            return None
-        try:
-            return self._last_reset_fn(customer)
-        except (KeyError, IndexError, TypeError, AttributeError, ValueError):
-            return None
-
-
-# ── sensor factory ──────────────────────────────────────────────────────────
+        attrs: dict[str, Any] = {
+            "meter_id": reading.meter_id,
+            "serial_nr": reading.serial_nr,
+            "meter_type": reading.meter_type,
+        }
+        if reading.reading_date is not None:
+            attrs["reading_date"] = reading.reading_date
+        return attrs
 
 
 def _build_sensors(
     coordinator: MijnIstaCoordinator,
     cuid: str,
     customer: CustomerData,
+    *,
+    known_ids: set[str] | None = None,
 ) -> list[MijnIstaSensor]:
-    """Build the complete sensor list for one property (Cuid)."""
+    """Build one raw sensor per meter, never service or period totals."""
+    services = {s.id: s for s in customer.services}
     sensors: list[MijnIstaSensor] = []
-    svc_by_id = {s.id: s for s in customer.services}
-    ha_lang = coordinator.hass.config.language
-
-    # ── annual sensors (per service) ────────────────────────────────────────
-    for sid, annual in customer.annual.items():
-        svc = svc_by_id.get(sid)
-        unit = _ha_unit(svc.unit) if svc else None
-        dc = _ha_device_class(svc.unit) if svc else None
+    for meter in customer.meters.values():
+        if known_ids is not None and _unique_id(cuid, meter) in known_ids:
+            continue
+        service = services.get(meter.service_id)
         label = (
-            _translate_service(svc.description, ha_lang) if svc else f"Service {sid}"
+            _translate_service(service.description, coordinator.hass.config.language)
+            if service
+            else f"Service {meter.service_id}"
         )
-
-        # Current-year total
-        sensors.append(
-            MijnIstaSensor(
-                coordinator,
-                cuid,
-                f"svc{sid}_annual_current",
-                f"{label} Current",
-                unit,
-                dc,
-                SensorStateClass.TOTAL,
-                value_fn=lambda c, s=sid: (
-                    c.annual[s].total_now if s in c.annual else None
-                ),
-                attrs_fn=lambda c, s=sid: (
-                    {
-                        "period_start": c.annual[s].cur_meters[0].begin_date
-                        if c.annual[s].cur_meters
-                        else None,
-                        "period_end": c.annual[s].cur_meters[0].end_date
-                        if c.annual[s].cur_meters
-                        else None,
-                        "meters": [m.as_dict() for m in c.annual[s].cur_meters],
-                    }
-                    if s in c.annual
-                    else {}
-                ),
-                last_reset_fn=lambda c, s=sid: (
-                    _parse_dt(c.annual[s].cur_meters[0].begin_date)
-                    if s in c.annual and c.annual[s].cur_meters
-                    else None
-                ),
-            )
-        )
-
-        # Previous-year total
-        sensors.append(
-            MijnIstaSensor(
-                coordinator,
-                cuid,
-                f"svc{sid}_annual_previous",
-                f"{label} Previous",
-                unit,
-                dc,
-                SensorStateClass.TOTAL,
-                value_fn=lambda c, s=sid: (
-                    c.annual[s].total_previous if s in c.annual else None
-                ),
-                attrs_fn=lambda c, s=sid: (
-                    {
-                        "total_whole_year": c.annual[s].total_whole_previous,
-                        "meters": [m.as_dict() for m in c.annual[s].comp_meters],
-                    }
-                    if s in c.annual
-                    else {}
-                ),
-                last_reset_fn=lambda c, s=sid: (
-                    _parse_dt(c.annual[s].comp_meters[0].begin_date)
-                    if s in c.annual and c.annual[s].comp_meters
-                    else None
-                ),
-            )
-        )
-
-        # Year-over-year change %
-        sensors.append(
-            MijnIstaSensor(
-                coordinator,
-                cuid,
-                f"svc{sid}_annual_diff_pct",
-                f"{label} Change",
-                PERCENTAGE,
-                None,
-                SensorStateClass.MEASUREMENT,
-                value_fn=lambda c, s=sid: (
-                    c.annual[s].diff_pct if s in c.annual else None
-                ),
-            )
-        )
-
-        # Annual building average (from ConsumptionAverages)
-        if sid in customer.building_averages:
-            sensors.append(
-                MijnIstaSensor(
-                    coordinator,
-                    cuid,
-                    f"svc{sid}_building_avg_annual",
-                    f"{label} Building Avg",
-                    unit,
-                    dc,
-                    SensorStateClass.MEASUREMENT,
-                    value_fn=lambda c, s=sid: c.building_averages.get(s),
-                )
-            )
-
-        # Per-meter annual sensors (current year)
-        for meter in annual.cur_meters:
-            sensors.append(
-                MijnIstaSensor(
-                    coordinator,
-                    cuid,
-                    f"svc{sid}_dev{meter.meter_id}_annual",
-                    f"{label} {meter.serial_nr}",
-                    unit,
-                    dc,
-                    SensorStateClass.TOTAL,
-                    value_fn=lambda c, s=sid, mid=meter.meter_id: (
-                        next(
-                            (
-                                m.c_value
-                                for m in c.annual[s].cur_meters
-                                if m.meter_id == mid
-                            ),
-                            None,
-                        )
-                        if s in c.annual
-                        else None
-                    ),
-                    attrs_fn=lambda c, s=sid, mid=meter.meter_id: (
-                        next(
-                            (
-                                m.as_dict()
-                                for m in c.annual[s].cur_meters
-                                if m.meter_id == mid
-                            ),
-                            {},
-                        )
-                        if s in c.annual
-                        else {}
-                    ),
-                    last_reset_fn=lambda c, s=sid, mid=meter.meter_id: (
-                        _parse_dt(
-                            next(
-                                (
-                                    m.begin_date
-                                    for m in c.annual[s].cur_meters
-                                    if m.meter_id == mid
-                                ),
-                                "",
-                            )
-                        )
-                        if s in c.annual
-                        else None
-                    ),
-                )
-            )
-
-    # ── monthly sensors (per service) ───────────────────────────────────────
-    # Scan all months newest-first; collect the first (most recent) MonthServiceData
-    # per service so sensor creation is not blocked by an empty in-progress month.
-    monthly_services: dict[int, Any] = {}  # sid → MonthServiceData
-    for me in customer.monthly:
-        for sid, msd in me.services.items():
-            if sid not in monthly_services:
-                monthly_services[sid] = msd
-
-    for sid, month_svc in monthly_services.items():
-        svc = svc_by_id.get(sid)
-        unit = _ha_unit(svc.unit) if svc else None
-        dc = _ha_device_class(svc.unit) if svc else None
-        label = (
-            _translate_service(svc.description, ha_lang) if svc else f"Service {sid}"
-        )
-
-        # Monthly total (most recent month with data, prior months in attributes)
-        sensors.append(
-            MijnIstaSensor(
-                coordinator,
-                cuid,
-                f"svc{sid}_month_latest",
-                f"{label} Month",
-                unit,
-                dc,
-                SensorStateClass.TOTAL,
-                value_fn=lambda c, s=sid: (
-                    me.services[s].total_consumption
-                    if (me := _find_month(c.monthly, s)) is not None
-                    else None
-                ),
-                attrs_fn=lambda c, s=sid: (
-                    {
-                        "month": f"{me.year}-{me.month:02d}",
-                        "building_average": me.services[s].building_average,
-                        "has_approximation": me.services[s].has_approximation,
-                        "prior_months": [
-                            {
-                                "year": entry.year,
-                                "month": entry.month,
-                                "consumption": entry.services[s].total_consumption
-                                if s in entry.services
-                                else None,
-                                "building_average": entry.services[s].building_average
-                                if s in entry.services
-                                else None,
-                            }
-                            for entry in c.monthly
-                            if not (entry.year == me.year and entry.month == me.month)
-                        ][:12],
-                    }
-                    if (me := _find_month(c.monthly, s)) is not None
-                    else {}
-                ),
-                last_reset_fn=lambda c, s=sid: (
-                    datetime(me.year, me.month, 1, tzinfo=timezone.utc)
-                    if (me := _find_month(c.monthly, s)) is not None
-                    else None
-                ),
-            )
-        )
-
-        # Monthly building average
-        sensors.append(
-            MijnIstaSensor(
-                coordinator,
-                cuid,
-                f"svc{sid}_month_building_avg",
-                f"{label} Month Avg",
-                unit,
-                dc,
-                SensorStateClass.MEASUREMENT,
-                value_fn=lambda c, s=sid: (
-                    me.services[s].building_average
-                    if (me := _find_month(c.monthly, s)) is not None
-                    else None
-                ),
-                attrs_fn=lambda c, s=sid: (
-                    {"month": f"{me.year}-{me.month:02d}"}
-                    if (me := _find_month(c.monthly, s)) is not None
-                    else {}
-                ),
-            )
-        )
-
-        # Per physical meter, latest month
-        for dev in month_svc.device_consumptions:
-            sensors.append(
-                MijnIstaSensor(
-                    coordinator,
-                    cuid,
-                    f"svc{sid}_dev{dev.meter_id}_month",
-                    f"{label} {dev.serial_nr} Month",
-                    unit,
-                    dc,
-                    SensorStateClass.TOTAL,
-                    value_fn=lambda c, s=sid, did=dev.meter_id: (
-                        next(
-                            (
-                                d.c_value
-                                for d in me.services[s].device_consumptions
-                                if d.meter_id == did
-                            ),
-                            None,
-                        )
-                        if (me := _find_month(c.monthly, s)) is not None
-                        else None
-                    ),
-                    attrs_fn=lambda c, s=sid, did=dev.meter_id: (
-                        next(
-                            (
-                                d.as_dict()
-                                for d in me.services[s].device_consumptions
-                                if d.meter_id == did
-                            ),
-                            {},
-                        )
-                        if (me := _find_month(c.monthly, s)) is not None
-                        else {}
-                    ),
-                    last_reset_fn=lambda c, s=sid: (
-                        datetime(me.year, me.month, 1, tzinfo=timezone.utc)
-                        if (me := _find_month(c.monthly, s)) is not None
-                        else None
-                    ),
-                )
-            )
-
+        sensors.append(MijnIstaSensor(coordinator, cuid, meter, label))
     return sensors
-
-
-# ── platform setup ──────────────────────────────────────────────────────────
 
 
 async def async_setup_entry(
@@ -470,52 +171,34 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up mijn.ista.nl sensors from a config entry."""
+    """Set up raw sensors, including meters first appearing after a partial response."""
     coordinator: MijnIstaCoordinator = config_entry.runtime_data
+    known_ids: set[str] = set()
 
-    entities: list[MijnIstaSensor] = []
-    if coordinator.data:
-        for cuid, customer in coordinator.data.items():
-            built = _build_sensors(coordinator, cuid, customer)
-            _LOGGER.debug("Registering %d sensors for cuid=%s", len(built), cuid)
-            entities.extend(built)
+    @callback
+    def add_new_meters() -> None:
+        entities: list[MijnIstaSensor] = []
+        for cuid, customer in (coordinator.data or {}).items():
+            entities.extend(
+                _build_sensors(coordinator, cuid, customer, known_ids=known_ids)
+            )
+        if entities:
+            known_ids.update(e.unique_id for e in entities if e.unique_id is not None)
+            async_add_entities(entities)
 
-    async_add_entities(entities)
-    _remove_stale_sensors(hass, config_entry, entities)
+    add_new_meters()
+    config_entry.async_on_unload(coordinator.async_add_listener(add_new_meters))
+    _remove_stale_sensors(hass, config_entry)
 
 
-def _remove_stale_sensors(
-    hass: HomeAssistant,
-    config_entry: ConfigEntry,
-    entities: list[MijnIstaSensor],
-) -> None:
-    """Remove obsolete monthly meter and temperature sensors from the registry.
-
-    ista dropped the per-device breakdown (DeviceConsumptions) from
-    MonthValues entirely, so these entities (unique_id suffix
-    "..._dev<meter_id>_month") can never be recreated — left alone they'd
-    sit in the registry as permanently Unavailable. Temperature sensors are
-    no longer provided by this integration.
-    """
-    obsolete_temperature_suffixes = (
-        "_avg_temp_current_period",
-        "_avg_temp_previous_period",
-    )
-    current_unique_ids = {e.unique_id for e in entities}
-    ent_reg = async_get_entity_registry(hass)
-    for entry in async_entries_for_config_entry(ent_reg, config_entry.entry_id):
-        if entry.unique_id in current_unique_ids:
-            continue
-        is_stale_device_month = (
-            "_dev" in entry.unique_id and entry.unique_id.endswith("_month")
-        )
-        is_obsolete_temperature = entry.unique_id.endswith(
-            obsolete_temperature_suffixes
-        )
-        if not (is_stale_device_month or is_obsolete_temperature):
-            continue
-        _LOGGER.info(
-            "Removing obsolete sensor %s",
-            entry.entity_id,
-        )
-        ent_reg.async_remove(entry.entity_id)
+def _remove_stale_sensors(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
+    """Retire only known derived entity families, never absent raw meters."""
+    registry = async_get_entity_registry(hass)
+    for entry in async_entries_for_config_entry(registry, config_entry.entry_id):
+        if (
+            entry.domain == "sensor"
+            and entry.platform == DOMAIN
+            and _OBSOLETE_SENSOR.fullmatch(entry.unique_id)
+        ):
+            _LOGGER.info("Removing retired derived sensor %s", entry.entity_id)
+            registry.async_remove(entry.entity_id)
