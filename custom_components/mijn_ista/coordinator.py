@@ -126,7 +126,6 @@ class MonthEntry:
 
     year: int
     month: int
-    avg_temp: float | None
     services: dict[int, MonthServiceData] = field(
         default_factory=dict
     )  # keyed by service_id
@@ -152,12 +151,9 @@ class CustomerData:
     city: str
     date_start: str
     services: list[ServiceInfo]
-    billing_periods: list[dict[str, Any]]
     annual: dict[int, AnnualSummary]  # keyed by service_id
     monthly: list[MonthEntry]  # newest first
     building_averages: dict[int, float]  # service_id → NormalizedValue
-    cur_period_temp: float | None  # avg outdoor temp for current billing period
-    prev_period_temp: float | None  # avg outdoor temp for previous billing period
 
 
 # ── parsing helpers (pure functions, easy to unit-test) ─────────────────────
@@ -245,8 +241,6 @@ def _parse_customer(
             MonthEntry(
                 year=mc["y"],
                 month=mc["m"],
-                avg_temp=mc.get("at")
-                or None,  # null/0 → None (KNMI data not yet available)
                 services=svc_map,
             )
         )
@@ -259,14 +253,6 @@ def _parse_customer(
         for a in avg_data.get("Averages", [])
     }
 
-    # Extract average outdoor temperature per billing period (from KNMI via ista)
-    billing_periods = cur.get("BillingPeriods", [])
-    sorted_periods = sorted(billing_periods, key=lambda p: p.get("y", 0), reverse=True)
-    cur_period_temp = sorted_periods[0].get("ta") or None if sorted_periods else None
-    prev_period_temp = (
-        sorted_periods[1].get("ta") or None if len(sorted_periods) > 1 else None
-    )
-
     return CustomerData(
         cuid=cus["Cuid"],
         address=cus.get("Adress", ""),
@@ -274,12 +260,9 @@ def _parse_customer(
         city=cus.get("City", ""),
         date_start=cus.get("DateStart", ""),
         services=services,
-        billing_periods=billing_periods,
         annual=annual,
         monthly=monthly,
         building_averages=building_averages,
-        cur_period_temp=cur_period_temp,
-        prev_period_temp=prev_period_temp,
     )
 
 

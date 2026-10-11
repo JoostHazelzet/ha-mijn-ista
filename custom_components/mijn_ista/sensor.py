@@ -16,7 +16,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
     UnitOfEnergy,
-    UnitOfTemperature,
     UnitOfVolume,
 )
 from homeassistant.core import HomeAssistant
@@ -24,6 +23,8 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity_registry import (
     async_entries_for_config_entry,
+)
+from homeassistant.helpers.entity_registry import (
     async_get as async_get_entity_registry,
 )
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -458,39 +459,6 @@ def _build_sensors(
                 )
             )
 
-    # ── average temperature (per billing period, from KNMI via ista) ────────
-    sensors.append(
-        MijnIstaSensor(
-            coordinator,
-            cuid,
-            "avg_temp_current_period",
-            "Temperature",
-            UnitOfTemperature.CELSIUS,
-            SensorDeviceClass.TEMPERATURE,
-            SensorStateClass.MEASUREMENT,
-            value_fn=lambda c: c.cur_period_temp,
-            attrs_fn=lambda c: {
-                "monthly_history": [
-                    {"year": me.year, "month": me.month, "avg_temp": me.avg_temp}
-                    for me in c.monthly[:24]
-                    if me.avg_temp is not None
-                ],
-            },
-        )
-    )
-    sensors.append(
-        MijnIstaSensor(
-            coordinator,
-            cuid,
-            "avg_temp_previous_period",
-            "Temperature Previous",
-            UnitOfTemperature.CELSIUS,
-            SensorDeviceClass.TEMPERATURE,
-            SensorStateClass.MEASUREMENT,
-            value_fn=lambda c: c.prev_period_temp,
-        )
-    )
-
     return sensors
 
 
@@ -513,30 +481,41 @@ async def async_setup_entry(
             entities.extend(built)
 
     async_add_entities(entities)
-    _remove_stale_device_month_sensors(hass, config_entry, entities)
+    _remove_stale_sensors(hass, config_entry, entities)
 
 
-def _remove_stale_device_month_sensors(
+def _remove_stale_sensors(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
     entities: list[MijnIstaSensor],
 ) -> None:
-    """Remove per-meter Month sensors ista's API no longer supplies data for.
+    """Remove obsolete monthly meter and temperature sensors from the registry.
 
     ista dropped the per-device breakdown (DeviceConsumptions) from
     MonthValues entirely, so these entities (unique_id suffix
     "..._dev<meter_id>_month") can never be recreated — left alone they'd
-    sit in the registry as permanently Unavailable.
+    sit in the registry as permanently Unavailable. Temperature sensors are
+    no longer provided by this integration.
     """
+    obsolete_temperature_suffixes = (
+        "_avg_temp_current_period",
+        "_avg_temp_previous_period",
+    )
     current_unique_ids = {e.unique_id for e in entities}
     ent_reg = async_get_entity_registry(hass)
     for entry in async_entries_for_config_entry(ent_reg, config_entry.entry_id):
         if entry.unique_id in current_unique_ids:
             continue
-        if "_dev" not in entry.unique_id or not entry.unique_id.endswith("_month"):
+        is_stale_device_month = (
+            "_dev" in entry.unique_id and entry.unique_id.endswith("_month")
+        )
+        is_obsolete_temperature = entry.unique_id.endswith(
+            obsolete_temperature_suffixes
+        )
+        if not (is_stale_device_month or is_obsolete_temperature):
             continue
         _LOGGER.info(
-            "Removing %s: ista no longer provides per-meter monthly data",
+            "Removing obsolete sensor %s",
             entry.entity_id,
         )
         ent_reg.async_remove(entry.entity_id)

@@ -28,9 +28,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/JoostHazelzet/ha-mijn-ista"
-"Issue Tracker" = "https://github.com/JoostHazelzet/ha-mijn-ista/issues"
-Source = "https://github.com/JoostHazelzet/ha-mijn-ista/tree/main/packages/mijn-ista-api"
+Homepage = "https://github.com/JoostHazelzet/mijn_ista_nl"
+"Issue Tracker" = "https://github.com/JoostHazelzet/mijn_ista_nl/issues"
+Source = "https://github.com/JoostHazelzet/mijn_ista_nl/tree/main/packages/mijn-ista-api"
 
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-asyncio>=0.24"]

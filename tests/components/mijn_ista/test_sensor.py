@@ -53,9 +53,9 @@ class TestTranslateService:
 class TestFindMonth:
     def test_returns_most_recent_entry_with_data(self):
         from custom_components.mijn_ista.coordinator import MonthEntry, MonthServiceData
-        empty = MonthEntry(year=2024, month=12, avg_temp=None, services={})
+        empty = MonthEntry(year=2024, month=12, services={})
         has_data = MonthEntry(
-            year=2024, month=11, avg_temp=8.2,
+            year=2024, month=11,
             services={1: MonthServiceData(service_id=1, total_consumption=4.2,
                                           building_average=5.0, has_approximation=False,
                                           device_consumptions=[])}
@@ -65,7 +65,7 @@ class TestFindMonth:
 
     def test_returns_none_when_no_entry_has_data(self):
         from custom_components.mijn_ista.coordinator import MonthEntry
-        empty = MonthEntry(year=2024, month=12, avg_temp=None, services={})
+        empty = MonthEntry(year=2024, month=12, services={})
         assert _find_month([empty], 99) is None
 
     def test_returns_none_for_empty_list(self):
@@ -74,9 +74,9 @@ class TestFindMonth:
     def test_skips_empty_first_month(self):
         """Most recent month with empty services should be skipped."""
         from custom_components.mijn_ista.coordinator import MonthEntry, MonthServiceData
-        current = MonthEntry(year=2024, month=12, avg_temp=None, services={})
+        current = MonthEntry(year=2024, month=12, services={})
         prior = MonthEntry(
-            year=2024, month=11, avg_temp=8.2,
+            year=2024, month=11,
             services={1: MonthServiceData(service_id=1, total_consumption=4.2,
                                           building_average=5.0, has_approximation=False,
                                           device_consumptions=[])}
@@ -136,12 +136,13 @@ class TestBuildSensors:
         for s in sensors:
             assert s._attr_unique_id.startswith(f"{DOMAIN}_test-cuid-abc123_")
 
-    def test_temperature_sensors_present(self, coordinator):
+    def test_temperature_sensors_are_not_created(self, coordinator):
         customer = _make_customer_data()
         sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
         names = [s._attr_name for s in sensors]
-        assert "Temperature" in names
-        assert "Temperature Previous" in names
+        assert "Temperature" not in names
+        assert "Temperature Previous" not in names
+        assert not any("avg_temp_" in s._attr_unique_id for s in sensors)
 
     def test_annual_current_sensor_english(self, hass: HomeAssistant):
         from unittest.mock import MagicMock
@@ -221,9 +222,7 @@ class TestBuildSensors:
         # Prepend a current-month entry with no service data (in-progress month)
         cus = MOCK_USER_VALUES["Cus"][0]
         month_data = copy.deepcopy(MOCK_MONTH_VALUES)
-        month_data["mc"].insert(
-            0, {"y": 2024, "m": 12, "at": None, "ServiceConsumptions": []}
-        )
+        month_data["mc"].insert(0, {"y": 2024, "m": 12, "ServiceConsumptions": []})
         customer = _parse_customer(cus, month_data, MOCK_AVG_VALUES)
 
         # monthly[0] is now December with empty services
@@ -246,9 +245,7 @@ class TestBuildSensors:
 
         cus = MOCK_USER_VALUES["Cus"][0]
         month_data = copy.deepcopy(MOCK_MONTH_VALUES)
-        month_data["mc"].insert(
-            0, {"y": 2024, "m": 12, "at": None, "ServiceConsumptions": []}
-        )
+        month_data["mc"].insert(0, {"y": 2024, "m": 12, "ServiceConsumptions": []})
         customer = _parse_customer(cus, month_data, MOCK_AVG_VALUES)
 
         coord = MagicMock()
@@ -298,18 +295,6 @@ class TestSensorNativeValue:
         sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
         month = next(s for s in sensors if s._attr_name == "Heating Month")
         assert month.native_value == 4.2
-
-    def test_temperature_current(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        temp = next(s for s in sensors if s._attr_name == "Temperature")
-        assert temp.native_value == 10.5
-
-    def test_temperature_previous(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        temp_prev = next(s for s in sensors if s._attr_name == "Temperature Previous")
-        assert temp_prev.native_value == 9.8
 
     def test_returns_none_when_coordinator_data_empty(self, coordinator):
         coordinator.data = {}
@@ -366,13 +351,6 @@ class TestLastReset:
         change = next(s for s in sensors if s._attr_name == "Heating Change")
         assert change.last_reset is None
 
-    def test_temperature_has_no_last_reset(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        temp = next(s for s in sensors if s._attr_name == "Temperature")
-        assert temp.last_reset is None
-
-
 # ---------------------------------------------------------------------------
 # extra_state_attributes
 # ---------------------------------------------------------------------------
@@ -404,33 +382,15 @@ class TestExtraStateAttributes:
         assert "prior_months" in attrs
         assert "month" in attrs
 
-    def test_temperature_has_monthly_history(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        temp = next(s for s in sensors if s._attr_name == "Temperature")
-        attrs = temp.extra_state_attributes
-        assert "monthly_history" in attrs
-        # Only months with non-None avg_temp should be included
-        for entry in attrs["monthly_history"]:
-            assert entry["avg_temp"] is not None
-
-    def test_no_attrs_fn_returns_empty_dict(self, coordinator):
-        customer = _make_customer_data()
-        sensors = _build_sensors(coordinator, "test-cuid-abc123", customer)
-        temp_prev = next(s for s in sensors if s._attr_name == "Temperature Previous")
-        # Temperature Previous has no attrs_fn
-        assert temp_prev.extra_state_attributes == {}
-
-
 # ---------------------------------------------------------------------------
-# Stale per-meter Month sensor cleanup
+# Stale sensor cleanup
 # ---------------------------------------------------------------------------
 
 
-class TestRemoveStaleDeviceMonthSensors:
+class TestRemoveStaleSensors:
     """ista dropped per-device breakdown from MonthValues; orphaned
-    "<meter> Month" entities left behind from before that change must be
-    removed from the entity registry, not just left showing Unavailable.
+    "<meter> Month" and retired temperature sensors must be removed from the
+    entity registry, not just left showing Unavailable.
     """
 
     async def test_removes_entity_no_longer_produced(self, hass: HomeAssistant):
@@ -449,6 +409,18 @@ class TestRemoveStaleDeviceMonthSensors:
             f"{DOMAIN}_test-cuid-abc123_svc6_dev999999_month",
             config_entry=entry,
         )
+        stale_temperature = ent_reg.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            f"{DOMAIN}_test-cuid-abc123_avg_temp_current_period",
+            config_entry=entry,
+        )
+        stale_previous_temperature = ent_reg.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            f"{DOMAIN}_test-cuid-abc123_avg_temp_previous_period",
+            config_entry=entry,
+        )
         kept_annual = ent_reg.async_get_or_create(
             "sensor",
             DOMAIN,
@@ -464,6 +436,8 @@ class TestRemoveStaleDeviceMonthSensors:
         await async_setup_entry(hass, entry, MagicMock())
 
         assert ent_reg.async_get(stale.entity_id) is None
+        assert ent_reg.async_get(stale_temperature.entity_id) is None
+        assert ent_reg.async_get(stale_previous_temperature.entity_id) is None
         assert ent_reg.async_get(kept_annual.entity_id) is not None
 
     async def test_keeps_entity_still_produced_this_session(self, hass: HomeAssistant):

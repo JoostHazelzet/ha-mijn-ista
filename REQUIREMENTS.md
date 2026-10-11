@@ -1,7 +1,11 @@
-# Requirements review for ha-mijn-ista
+# Requirements review for mijn_ista_nl
 
 ## 1. Purpose
 This document captures a review of the existing Home Assistant custom integration for `mijn.ista.nl`, identifies optimization opportunities, and proposes a set of requirements for future enhancements.
+
+The community repository is `JoostHazelzet/mijn_ista_nl`, detached from the original
+GitHub fork network with Git history preserved. Repository renaming does not change
+the Home Assistant domain `mijn_ista` or Python package import names.
 
 ## 2. Current design summary
 The integration follows a standard Home Assistant pattern:
@@ -9,7 +13,7 @@ The integration follows a standard Home Assistant pattern:
 - a single coordinator in `custom_components/mijn_ista/coordinator.py`
 - sensor entity generation in `custom_components/mijn_ista/sensor.py`
 
-The coordinator authenticates to the external API, fetches user data, and normalizes per-property `Cuid` data into typed structures. Sensors are then generated for annual, monthly, and temperature-related metrics with Home Assistant units and state classes.
+The coordinator authenticates to the external API, fetches user data, and normalizes per-property `Cuid` data into typed structures. Sensors are then generated for annual and monthly consumption metrics with Home Assistant units and state classes. Outdoor-temperature data from KNMI is not used or exposed.
 
 ### 2.1 Standalone API package (local testing stage)
 An independently installable package now lives in
@@ -59,7 +63,7 @@ In `sensor.py`, the sensor factory repeatedly resolves service metadata and buil
 The entity `native_value` and `extra_state_attributes` properties recompute attributes from coordinator data on every HA state read. This is acceptable for a small integration, but if the data set grows or entities are updated frequently, it may become inefficient. A future improvement should consider caching derived static metadata per entity or reducing per-read work in the attribute calculation path.
 
 ### 3.4 Add more robust partial-data handling
-The coordinator already handles missing month values and unavailable KNMI values gracefully, which is good. The next phase should formalize the data contract for partial API responses and document exactly which sensors are unavailable or unknown under different outage scenarios, including partial authentication failures and incomplete billing periods.
+The coordinator already handles missing month values gracefully. The next phase should formalize the data contract for partial API responses and document exactly which sensors are unavailable or unknown under different outage scenarios, including partial authentication failures and incomplete billing periods.
 
 ### 3.5 Tighten refresh strategy around startup and rate limits
 The coordinator intentionally uses a quick month fetch on first refresh, then full polling later. This is a solid optimization. The next requirement should be to document and test the startup behavior clearly, especially around the update interval and do-not-poll-faster-than-necessary guidance.
@@ -89,7 +93,7 @@ The integration shall authenticate and refresh consumption data for each configu
 The integration shall support accounts with multiple properties and create a distinct HA device grouping per `Cuid`.
 
 ### FR-3: Sensor generation
-The integration shall generate sensors for annual totals, monthly totals, building averages, service metadata, and temperature data where the API provides them.
+The integration shall generate sensors for annual totals, monthly totals, and building averages. It shall not retrieve or expose outdoor-temperature data.
 
 ### FR-4: Locale handling
 The integration shall preserve Dutch service names in Dutch HA language settings and translate to English where appropriate when Home Assistant is configured in English.

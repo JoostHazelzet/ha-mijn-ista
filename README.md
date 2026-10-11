@@ -1,7 +1,7 @@
 # ista Nederland — mijn.ista.nl
 
 [![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-[![GitHub release](https://img.shields.io/github/v/release/JoostHazelzet/ha-mijn-ista)](https://github.com/JoostHazelzet/ha-mijn-ista/releases)
+[![GitHub release](https://img.shields.io/github/v/release/JoostHazelzet/mijn_ista_nl)](https://github.com/JoostHazelzet/mijn_ista_nl/releases)
 
 Home Assistant integration for [mijn.ista.nl](https://mijn.ista.nl) — the Dutch ista energy monitoring portal. Exposes your heating, hot/cold water, electricity, and gas consumption as sensors you can track, automate, and display on your dashboard.
 
@@ -11,7 +11,7 @@ Home Assistant integration for [mijn.ista.nl](https://mijn.ista.nl) — the Dutc
 
 **Step 1 — Add this repository to HACS:**
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=JoostHazelzet&repository=ha-mijn-ista&category=integration)
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=JoostHazelzet&repository=mijn_ista_nl&category=integration)
 
 **Step 2 — Set up the integration:**
 
@@ -35,9 +35,6 @@ Reads your consumption data from mijn.ista.nl and creates sensors in Home Assist
 | `{Service} Month` | Latest month's total (prior months in attributes) |
 | `{Service} Month Avg` | Latest month's building average |
 | `{Service} {serial} Month` | Latest month for one physical meter |
-| `Temperature` | Current billing period avg outdoor temperature (KNMI) |
-| `Temperature Previous` | Previous billing period avg outdoor temperature |
-
 All sensors are grouped under a single **ista NL** device per property in the Home Assistant device registry.
 
 ---
@@ -56,7 +53,7 @@ All sensors are grouped under a single **ista NL** device per property in the Ho
 
 1. Click the **Add repository** button above, or go to **HACS → Integrations → ⋮ → Custom repositories** and add:
    ```
-   https://github.com/joosthazelzet/ha-mijn-ista
+   https://github.com/JoostHazelzet/mijn_ista_nl
    ```
    with category **Integration**.
 2. Search for **ista Nederland (mijn.ista.nl)** in HACS and install it.
@@ -65,7 +62,7 @@ All sensors are grouped under a single **ista NL** device per property in the Ho
 
 ### Option B — Manual
 
-1. Download the [latest release](https://github.com/JoostHazelzet/ha-mijn-ista/releases/latest).
+1. Download the [latest release](https://github.com/JoostHazelzet/mijn_ista_nl/releases/latest).
 2. Copy the `custom_components/mijn_ista/` folder into your `<config>/custom_components/` directory.
 3. Restart Home Assistant.
 4. Go to **Settings → Devices & Services → Add Integration** and search for **ista Nederland**.
@@ -108,10 +105,6 @@ attributes:
   ...
 ```
 
-### Temperature sensors
-
-Outdoor temperature data comes from KNMI (Royal Netherlands Meteorological Institute) via the ista API. The value for the most recent month may be `unavailable` because KNMI data is finalized with a delay.
-
 ### Building averages
 
 Building average sensors show the average consumption for your entire building or complex during the same period. Useful for comparing your own usage against your neighbours.
@@ -138,7 +131,6 @@ Building average sensors show the average consumption for your entire building o
 | "Too many login attempts" in the setup dialog | Logins are spaced at least 120 s apart. Wait the indicated number of seconds and submit again |
 | Warnings about "session cookie chunks not sent" | The HTTP client dropped part of the login cookie. Update the integration and report the aiohttp version in an issue |
 | All sensors unavailable | API unreachable or account suspended |
-| Temperature sensor unavailable | KNMI data not yet finalized for the latest month — normal |
 | Sensor values stale | mijn.ista.nl data updates every 3 days at most |
 
 Enable debug logging to capture API responses:
@@ -186,13 +178,12 @@ has also been imported, with its complete Git history, into
 distribution is named `mijn-ista-api-community`; standalone development no longer
 requires the original author's published package.
 
-GitHub fork-network detachment is a separate owner action under **Settings →
-General → Danger Zone → Leave fork network**. It preserves Git commit metadata,
-but is permanent and drops associated GitHub metadata as described in
-[GitHub's detachment documentation](https://docs.github.com/en/pull-requests/how-tos/work-with-forks/detaching-a-fork).
-Do not delete/recreate the repository or rewrite commits to detach it.
+The repository is detached from GitHub's fork network and maintained independently
+as `JoostHazelzet/mijn_ista_nl`. Detachment and renaming preserved the Git commit
+history. The Home Assistant domain remains `mijn_ista`, so existing config entries
+and Python import names are unchanged.
 
-Bug reports and pull requests are welcome at [github.com/JoostHazelzet/ha-mijn-ista](https://github.com/JoostHazelzet/ha-mijn-ista/issues).
+Bug reports and pull requests are welcome at [github.com/JoostHazelzet/mijn_ista_nl](https://github.com/JoostHazelzet/mijn_ista_nl/issues).
 
 Before submitting a PR, run:
 

@@ -105,13 +105,11 @@ MOCK_USER_VALUES: dict = {
                         "y": 2024,
                         "s": "2024-01-01T00:00:00",
                         "e": "2024-12-31T00:00:00",
-                        "ta": 10.5,
                     },
                     {
                         "y": 2023,
                         "s": "2023-01-01T00:00:00",
                         "e": "2023-12-31T00:00:00",
-                        "ta": 9.8,
                     },
                 ],
             },
@@ -125,7 +123,6 @@ MOCK_MONTH_VALUES: dict = {
         {
             "y": 2024,
             "m": 11,
-            "at": 8.2,
             "ServiceConsumptions": [
                 {
                     "ServiceId": 1,
@@ -174,7 +171,6 @@ MOCK_MONTH_VALUES: dict = {
         {
             "y": 2024,
             "m": 10,
-            "at": None,  # KNMI data not yet available
             "ServiceConsumptions": [
                 {
                     "ServiceId": 1,

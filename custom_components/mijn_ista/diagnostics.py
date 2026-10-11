@@ -29,8 +29,6 @@ async def async_get_config_entry_diagnostics(
             "monthly_entries": len(c.monthly),
             "annual_service_ids": list(c.annual.keys()),
             "building_average_service_ids": list(c.building_averages.keys()),
-            "cur_period_temp": c.cur_period_temp,
-            "prev_period_temp": c.prev_period_temp,
         }
 
     return async_redact_data(

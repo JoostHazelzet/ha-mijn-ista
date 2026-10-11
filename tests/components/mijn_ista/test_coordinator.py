@@ -193,22 +193,11 @@ class TestParseCustomer:
         assert isinstance(latest, MonthEntry)
         assert latest.year == 2024
         assert latest.month == 11
-        assert latest.avg_temp == 8.2
         assert 1 in latest.services
-
-    def test_null_avg_temp_becomes_none(self, customer_data):
-        # Second month has at=None in fixture
-        second = customer_data.monthly[1]
-        assert second.avg_temp is None
 
     def test_building_averages(self, customer_data):
         assert customer_data.building_averages[1] == 46.0
         assert customer_data.building_averages[2] == 19.5
-
-    def test_billing_period_temperatures(self, customer_data):
-        # Sorted descending by year → 2024 is current, 2023 is previous
-        assert customer_data.cur_period_temp == 10.5
-        assert customer_data.prev_period_temp == 9.8
 
     def test_monthly_service_data(self, customer_data):
         latest = customer_data.monthly[0]
@@ -225,35 +214,6 @@ class TestParseCustomer:
         result = _parse_customer(cus, {"mc": []}, {"Averages": []})
         assert result.monthly == []
         assert result.building_averages == {}
-
-    def test_zero_avg_temp_becomes_none(self):
-        """avg_temp of 0 should be treated as None (KNMI data not yet available)."""
-        cus = MOCK_USER_VALUES["Cus"][0]
-        month_data = {
-            "mc": [{"y": 2024, "m": 11, "at": 0, "ServiceConsumptions": []}]
-        }
-        result = _parse_customer(cus, month_data, {"Averages": []})
-        assert result.monthly[0].avg_temp is None
-
-    def test_missing_billing_periods_temperatures_are_none(self):
-        """If no billing periods exist, period temps should be None."""
-        import copy
-        cus = copy.deepcopy(MOCK_USER_VALUES["Cus"][0])
-        cus["curConsumption"]["BillingPeriods"] = []
-        result = _parse_customer(cus, {"mc": []}, {"Averages": []})
-        assert result.cur_period_temp is None
-        assert result.prev_period_temp is None
-
-    def test_single_billing_period_prev_temp_is_none(self):
-        """With only one billing period, previous temp should be None."""
-        import copy
-        cus = copy.deepcopy(MOCK_USER_VALUES["Cus"][0])
-        cus["curConsumption"]["BillingPeriods"] = [
-            {"y": 2024, "s": "2024-01-01T00:00:00", "e": "2024-12-31T00:00:00", "ta": 10.5}
-        ]
-        result = _parse_customer(cus, {"mc": []}, {"Averages": []})
-        assert result.cur_period_temp == 10.5
-        assert result.prev_period_temp is None
 
     def test_annual_meter_as_dict(self, customer_data):
         meter = customer_data.annual[1].cur_meters[0]
