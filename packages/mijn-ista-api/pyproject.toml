@@ -3,11 +3,17 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mijn-ista-api"
+name = "mijn-ista-api-community"
 version = "0.2.0"
-description = "Async Python client for the mijn.ista.nl energy portal"
+description = "Community-maintained async Python client for the mijn.ista.nl energy portal"
 readme = "README.md"
 license = { text = "MIT" }
+authors = [
+    { name = "Ali Alaei" },
+]
+maintainers = [
+    { name = "Joost Hazelzet" },
+]
 requires-python = ">=3.12"
 dependencies = ["aiohttp>=3.9.0"]
 keywords = ["ista", "energy", "home-automation", "async"]
@@ -22,9 +28,16 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/aalaei/mijn-ista-api"
-"Issue Tracker" = "https://github.com/aalaei/mijn-ista-api/issues"
-Source = "https://github.com/aalaei/mijn-ista-api"
+Homepage = "https://github.com/JoostHazelzet/ha-mijn-ista"
+"Issue Tracker" = "https://github.com/JoostHazelzet/ha-mijn-ista/issues"
+Source = "https://github.com/JoostHazelzet/ha-mijn-ista/tree/main/packages/mijn-ista-api"
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-asyncio>=0.24"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mijn_ista_api"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

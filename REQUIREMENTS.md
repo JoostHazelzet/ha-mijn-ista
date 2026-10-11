@@ -11,6 +11,37 @@ The integration follows a standard Home Assistant pattern:
 
 The coordinator authenticates to the external API, fetches user data, and normalizes per-property `Cuid` data into typed structures. Sensors are then generated for annual, monthly, and temperature-related metrics with Home Assistant units and state classes.
 
+### 2.1 Standalone API package (local testing stage)
+An independently installable package now lives in
+[`packages/mijn-ista-client`](packages/mijn-ista-client/README.md), imported as
+`mijn_ista_client`. It extracts cookie handling, shared rate limits, login retries,
+credential-rejection classification and month-shard polling from the integration's
+client. It now depends on the locally maintained
+[`mijn-ista-api-community`](packages/mijn-ista-api/README.md) core instead of the
+abandoned author's published `mijn-ista-api` distribution, and on ordinary Python
+HTTP libraries, not Home Assistant. Install both local package paths together.
+The repository's uv development environment resolves both packages to editable
+local sources, so existing notebook imports use the maintained API core.
+
+The original API repository was imported under `packages/mijn-ista-api` using a
+non-squashed Git subtree, preserving its complete history through
+`7ef27e16d60124d0f7f96aae9d8ccf063cbaf932`. The upstream MIT declaration and original
+author attribution are retained. The core's Python import namespace remains
+`mijn_ista_api`; the original and maintained distributions must not coexist in one
+environment. The protocol implementation is unchanged at this stage.
+
+The package can be installed locally in editable mode and exercised from a Python
+console, script or notebook. Its own offline test suite runs without loading the
+integration or the repository's Home Assistant fixtures. The authentication
+playground remains available for low-level investigation of the undocumented
+protocol; the package is the place to test production-style client changes.
+
+**Publication boundary:** the package is not yet published. Home Assistant wiring
+is intentionally deferred: the integration retains its existing client and manifest
+dependency, so normal installations continue to work. Package fixes affect standalone
+tests only until explicitly backported or until the published dependency is adopted.
+See FR-9 and NFR-6 for the required transition.
+
 ## 3. Observed optimization opportunities
 
 ### 3.1 Parallelize per-property API work
@@ -76,6 +107,24 @@ The integration shall expose enough diagnostic detail to help troubleshoot API i
 ### FR-8: Reauthentication
 The config flow shall provide `async_step_reauth` so users can enter new credentials when the stored ones are genuinely rejected. Dutch and English strings shall be provided.
 
+### FR-9: Standalone API development
+- The API client shall be an independently installable Python package that can
+  authenticate and fetch raw user, consumption, average and monthly payloads
+  without importing, installing or running Home Assistant.
+- Plain Python scripts and the authentication notebook shall be able to use the
+  same standalone client. A documented console example shall prompt for credentials
+  or read them from the environment, without embedding secrets in source code.
+- HTTP sessions shall be private per client. The package shall support both
+  caller-owned sessions and a context manager that closes its owned session on
+  success, exceptions and cancellation.
+- Cookie handling, login retries, error classification and request spacing shall
+  retain the existing behavior. Shared rate-limit state shall be reusable across
+  clients in one event loop; separate processes are not coordinated.
+- After standalone regression testing and publication, the integration shall pin
+  and import the released package as a dependency. This wiring is deferred until
+  publication; no unpublished requirement or checkout-relative import shall be
+  added to the Home Assistant runtime.
+
 ## 5. Non-functional requirements
 
 ### NFR-1: Performance
@@ -114,6 +163,29 @@ ista publishes no rate limits for `mijn.ista.nl` or `login.ista.com`. The limits
 - The integration should minimise the number of logins. For example, it can reuse a still-valid session and log in only when ista rejects it. The session lifetime probe in `notebooks/auth_playground.ipynb` (section 4) checks whether a session survives a 6-hour interval.
 - The coordinator's refresh timeout shall cover the login attempts including their waits, plus all data requests at the 5 s spacing (month polling per property), instead of a fixed 100 seconds.
 
+### NFR-6: API isolation and adoption
+- Standalone packaging and tests shall not depend on Home Assistant, its pytest
+  plugin, config entries, `hass.data`, or application-managed session cleanup.
+- The standalone package shall preserve upstream raw payload and exception
+  contracts. The coordinator remains responsible for normalization into integration
+  models; sensors remain responsible for units, localization and entity state.
+- Home Assistant exception translation, language selection, shared-state storage
+  and config-flow session handoff shall remain in an integration adapter.
+- The standalone client shall have offline regressions covering realistic chunked
+  cookies, rate limits, transient and genuine credential failures, full and partial
+  month history, empty data, session ownership and forbidden Home Assistant imports.
+- Adoption of a published release shall remove the duplicated integration client,
+  update manifest/development dependencies and policy-constant imports together,
+  and pass both standalone and integration tests without changing sensor behavior.
+- Community maintenance shall preserve the original integration history and the
+  imported API commit IDs, authorship and MIT attribution; GitHub fork-network
+  detachment shall not use history rewriting or repository deletion.
+- The standalone dependency graph shall resolve to the locally maintained API
+  source and not install the abandoned `mijn-ista-api` distribution. The maintained
+  core and resilient client shall both be published before runtime adoption.
+- Detachment from GitHub's fork network is an owner-managed operation, separate
+  from source imports. Its irreversible metadata loss must be acknowledged first.
+
 ## 6. Proposed acceptance criteria
 - The integration loads successfully for accounts with one or more properties.
 - Sensors update on the configured interval with no repeated full-history fetches unless required.
@@ -126,6 +198,12 @@ ista publishes no rate limits for `mijn.ista.nl` or `login.ista.com`. The limits
 - A transient login failure (rate-limit 403, Keycloak "cookie not found", `/Home` 401) results in `UpdateFailed` and a sooner retry, never in a reauth prompt.
 - Genuinely wrong credentials result in a reauth prompt that can be resolved through the UI (FR-8).
 - Two config entries refreshing concurrently do not interfere with each other's login.
+- Installing and importing `mijn_ista_client` in a clean Python environment works
+  without Home Assistant; its example can fetch raw data without a HA restart.
+- The standalone offline suite passes without importing Home Assistant or contacting
+  ista. A wheel contains the client, policy constants and typing marker, but no
+  credentials or notebook outputs.
+- Until publication, the existing integration manifest and runtime remain unchanged.
 
 ## 7. Suggested future work backlog
 
@@ -143,6 +221,9 @@ Status (v1.1.0): steps 1–8 are implemented in `custom_components/mijn_ista/api
 9. ⏳ Run the session lifetime probe (notebook section 4). If a session survives 6 h, reuse it and log in only when ista returns 401.
 
 ### Later
+0. Stabilize the standalone `mijn-ista-client` package using pure Python scripts and
+   offline payload regressions, publish it, then replace the integration's duplicate
+   client with a thin adapter and a pinned released dependency (FR-9, NFR-6).
 1. Add a lightweight profiling pass to confirm refresh latency and identify hottest code paths.
 2. Improve per-Cuid parallelization of independent API calls while enforcing safe concurrency limits.
 3. Precompute service metadata maps and reduce repeated lookups in sensor generation.
@@ -150,4 +231,7 @@ Status (v1.1.0): steps 1–8 are implemented in `custom_components/mijn_ista/api
 5. Add more regression tests for multi-property and missing-data scenarios.
 
 ## 8. Recommendation
-The current integration is already well-structured and clearly aligned with Home Assistant conventions. The most valuable improvements are not architectural rewrites but targeted performance tuning, data-contract hardening, and better observability for partial API responses.
+Use the standalone package to iterate on API bugs without Home Assistant restarts.
+Once stable and published, adopt it through a thin integration adapter while
+preserving coordinator normalization and sensor behavior. Further improvements
+should remain targeted: data-contract hardening, observability and measured tuning.

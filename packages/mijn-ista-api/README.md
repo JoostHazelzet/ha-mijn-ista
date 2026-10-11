@@ -1,12 +1,43 @@
-# mijn-ista-api
+# mijn-ista-api-community
 
 Async Python client for the [mijn.ista.nl](https://mijn.ista.nl) energy monitoring portal.
 
+## Community maintenance and attribution
+
+This is the community-maintained source of
+[Ali Alaei's mijn-ista-api](https://github.com/aalaei/mijn-ista-api),
+now maintained by Joost Hazelzet in this repository. The upstream project
+declares MIT in its packaging metadata and README. The [MIT license](LICENSE)
+and original authorship are retained.
+
+The complete upstream history through commit
+`7ef27e16d60124d0f7f96aae9d8ccf063cbaf932` was imported with a **non-squashed
+Git subtree** at `packages/mijn-ista-api`. Original commit IDs, authors, timestamps
+and messages remain reachable from this repository's history. This import is
+independent of GitHub's fork-network relationship; it needs no submodule checkout
+or access to the original repository at runtime.
+
+The distribution has a distinct name, `mijn-ista-api-community`, while Python
+imports remain `mijn_ista_api` for compatibility. Do not install it alongside
+the original `mijn-ista-api` distribution in the same environment: both own the
+same Python module. Use a fresh environment or uninstall the original first.
+Version 0.2.0 retains the imported protocol implementation unchanged.
+The [resilient client](../mijn-ista-client/README.md) adds the maintained cookie,
+retry and throttle layer.
+
 ## Installation
 
+This distribution is local and **not yet published**. From the repository root:
+
 ```bash
-pip install mijn-ista-api
+python -m pip install -e ./packages/mijn-ista-api
 ```
+
+For offline protocol tests, install `./packages/mijn-ista-api[test]`, then run
+`python -m pytest -q` from this package directory. The API tests previously
+located under the integration tests now live here, without Home Assistant
+fixtures. They cover login, CSRF headers, session expiry, server retries,
+month shards and endpoint payloads.
 
 ## Requirements
 
@@ -86,7 +117,10 @@ except MijnIstaConnectionError:
 
 ## Home Assistant integration
 
-This library powers the [ista Nederland](https://github.com/aalaei/ha-mijn-ista) Home Assistant custom integration.
+The original library powers the Home Assistant integration. The integration still
+pins that original published distribution until the community packages are stable
+and published. Local standalone development instead uses this maintained source.
+See [REQUIREMENTS.md](../../REQUIREMENTS.md) for the adoption boundary.
 
 ## License
 

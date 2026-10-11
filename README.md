@@ -1,8 +1,7 @@
 # ista Nederland — mijn.ista.nl
 
 [![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-[![GitHub release](https://img.shields.io/github/v/release/aalaei/ha-mijn-ista)](https://github.com/aalaei/ha-mijn-ista/releases)
-[![License](https://img.shields.io/github/license/aalaei/ha-mijn-ista)](LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/JoostHazelzet/ha-mijn-ista)](https://github.com/JoostHazelzet/ha-mijn-ista/releases)
 
 Home Assistant integration for [mijn.ista.nl](https://mijn.ista.nl) — the Dutch ista energy monitoring portal. Exposes your heating, hot/cold water, electricity, and gas consumption as sensors you can track, automate, and display on your dashboard.
 
@@ -12,7 +11,7 @@ Home Assistant integration for [mijn.ista.nl](https://mijn.ista.nl) — the Dutc
 
 **Step 1 — Add this repository to HACS:**
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=aalaei&repository=ha-mijn-ista&category=integration)
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=JoostHazelzet&repository=ha-mijn-ista&category=integration)
 
 **Step 2 — Set up the integration:**
 
@@ -66,7 +65,7 @@ All sensors are grouped under a single **ista NL** device per property in the Ho
 
 ### Option B — Manual
 
-1. Download the [latest release](https://github.com/aalaei/ha-mijn-ista/releases/latest).
+1. Download the [latest release](https://github.com/JoostHazelzet/ha-mijn-ista/releases/latest).
 2. Copy the `custom_components/mijn_ista/` folder into your `<config>/custom_components/` directory.
 3. Restart Home Assistant.
 4. Go to **Settings → Devices & Services → Add Integration** and search for **ista Nederland**.
@@ -156,7 +155,44 @@ logger:
 
 ## Contributing
 
-Bug reports and pull requests are welcome at [github.com/aalaei/ha-mijn-ista](https://github.com/aalaei/ha-mijn-ista/issues).
+### Standalone API testing
+
+For API experiments without Home Assistant, install the independently packaged
+[`mijn-ista-client`](packages/mijn-ista-client/README.md):
+
+```bash
+python -m pip install -e './packages/mijn-ista-api[test]' -e './packages/mijn-ista-client[test]'
+python packages/mijn-ista-client/examples/read_consumption.py
+cd packages/mijn-ista-client
+python -m pytest -q
+cd ../mijn-ista-api
+python -m pytest -q
+```
+
+Python 3.13 or newer is required. The example prompts for credentials and contacts
+the portal; the tests are offline and do not load Home Assistant. Use a separate
+virtual environment as described in the package README. The integration continues
+to use its current API client until the standalone package is stable and published;
+see [REQUIREMENTS.md](REQUIREMENTS.md) for the adoption boundary.
+
+### Community maintenance and history
+
+Joost Hazelzet maintains this continuation of
+[Ali Alaei's original integration](https://github.com/aalaei/ha-mijn-ista).
+The original integration commits and subsequent development history are retained.
+The [original MIT-declared API client](https://github.com/aalaei/mijn-ista-api)
+has also been imported, with its complete Git history, into
+[`packages/mijn-ista-api`](packages/mijn-ista-api/README.md). Its maintained
+distribution is named `mijn-ista-api-community`; standalone development no longer
+requires the original author's published package.
+
+GitHub fork-network detachment is a separate owner action under **Settings →
+General → Danger Zone → Leave fork network**. It preserves Git commit metadata,
+but is permanent and drops associated GitHub metadata as described in
+[GitHub's detachment documentation](https://docs.github.com/en/pull-requests/how-tos/work-with-forks/detaching-a-fork).
+Do not delete/recreate the repository or rewrite commits to detach it.
+
+Bug reports and pull requests are welcome at [github.com/JoostHazelzet/ha-mijn-ista](https://github.com/JoostHazelzet/ha-mijn-ista/issues).
 
 Before submitting a PR, run:
 

@@ -10,3 +10,4 @@ dist/
 *.egg-info/
 .ipynb_checkpoints/
 .venv-test/
+.venv-api/

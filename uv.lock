@@ -1203,7 +1203,8 @@ dependencies = [
     { name = "ipykernel" },
     { name = "ipywidgets" },
     { name = "jupyter" },
-    { name = "mijn-ista-api" },
+    { name = "mijn-ista-api-community" },
+    { name = "mijn-ista-client" },
     { name = "python-dotenv" },
 ]
 
@@ -1213,21 +1214,46 @@ requires-dist = [
     { name = "ipykernel" },
     { name = "ipywidgets", specifier = ">=8.0.0" },
     { name = "jupyter" },
-    { name = "mijn-ista-api", specifier = "==0.2.0" },
+    { name = "mijn-ista-api-community", editable = "packages/mijn-ista-api" },
+    { name = "mijn-ista-client", editable = "packages/mijn-ista-client" },
     { name = "python-dotenv" },
 ]
 
 [[package]]
-name = "mijn-ista-api"
+name = "mijn-ista-api-community"
 version = "0.2.0"
-source = { registry = "https://pypi.org/simple" }
+source = { editable = "packages/mijn-ista-api" }
 dependencies = [
     { name = "aiohttp" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3f/18/8bd0386c59a9398e63e43f124075f68c01585b476fd96c72648c1a41b163/mijn_ista_api-0.2.0.tar.gz", hash = "sha256:749dbdd35bbf937341f25561b1e54a90ef8dbec8924778e53b139f53a374b4a7", size = 6601, upload-time = "2026-08-09T17:59:15.113Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d4/bc/9e7bc3eb40bfeb611ea33c454323f93c255a2fb23b6218748fbc37d5c82a/mijn_ista_api-0.2.0-py3-none-any.whl", hash = "sha256:e51dfcf0b50bd92320fcceb2479a460705a0f8c7577d521d0a7d519a3397460c", size = 7487, upload-time = "2026-08-09T17:59:14.137Z" },
+
+[package.metadata]
+requires-dist = [
+    { name = "aiohttp", specifier = ">=3.9.0" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
+    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.24" },
 ]
+provides-extras = ["test"]
+
+[[package]]
+name = "mijn-ista-client"
+version = "0.1.0"
+source = { editable = "packages/mijn-ista-client" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "mijn-ista-api-community" },
+    { name = "yarl" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiohttp", specifier = ">=3.12" },
+    { name = "mijn-ista-api-community", specifier = "==0.2.0" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
+    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.24" },
+    { name = "yarl", specifier = ">=1.9" },
+]
+provides-extras = ["test"]
 
 [[package]]
 name = "mistune"

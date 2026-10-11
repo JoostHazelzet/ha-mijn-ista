@@ -1,4 +1,4 @@
-"""Tests for the mijn-ista API client library.
+"""Offline tests for the maintained API core, without Home Assistant fixtures.
 
 mijn.ista.nl authenticates through an OpenID Connect (Keycloak) login at
 login.ista.com rather than a token issued by the app itself. `authenticate()`
@@ -10,18 +10,20 @@ responses rather than mocking a single endpoint.
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-
 from mijn_ista_api import MijnIstaAPI, MijnIstaAuthError, MijnIstaConnectionError
 
-AUTHORIZE_URL = "https://login.ista.com/realms/portal_nl/protocol/openid-connect/auth?state=abc"
+AUTHORIZE_URL = (
+    "https://login.ista.com/realms/portal_nl/protocol/openid-connect/auth?state=abc"
+)
 FORM_ACTION = "https://login.ista.com/realms/portal_nl/login-actions/authenticate?session_code=xyz"
 LOGIN_FORM_HTML = f'<form id="kc-form-login" action="{FORM_ACTION}">...</form>'
-INVALID_CREDS_HTML = LOGIN_FORM_HTML + "<span>Ongeldige gebruikersnaam of wachtwoord.</span>"
+INVALID_CREDS_HTML = (
+    LOGIN_FORM_HTML + "<span>Ongeldige gebruikersnaam of wachtwoord.</span>"
+)
 CALLBACK_ACTION = "https://mijn.ista.nl/signin-oidc"
 FORM_POST_CALLBACK_HTML = (
     f'<FORM METHOD="POST" ACTION="{CALLBACK_ACTION}">'
@@ -167,9 +169,7 @@ class TestAuthenticate:
             await api.authenticate()
 
     async def test_timeout_raises_connection_error(self):
-        session = _FakeSession(
-            get_responses=[_RaisingContextManager(asyncio.TimeoutError())]
-        )
+        session = _FakeSession(get_responses=[_RaisingContextManager(TimeoutError())])
         api = MijnIstaAPI(session, "u", "p")
         with pytest.raises(MijnIstaConnectionError):
             await api.authenticate()
@@ -183,7 +183,9 @@ class TestAuthenticate:
 class TestRequestConstruction:
     async def test_data_call_sends_csrf_and_auth_headers(self):
         api = await _authenticated_api()
-        api._session = _FakeSession(post_responses=[_FakeResponse(200, json_data={"Cus": []})])
+        api._session = _FakeSession(
+            post_responses=[_FakeResponse(200, json_data={"Cus": []})]
+        )
         await api.get_user_values()
         _, kwargs = api._session.post_calls[0]
         assert kwargs["headers"]["x-csrf-token-ista-nl_tp"] == "csrf-tok-123"
@@ -206,7 +208,9 @@ class TestRetryOn401:
         api = await _authenticated_api()
 
         get_r, post_r = _login_sequence()
-        post_r = [_FakeResponse(401)] + post_r + [_FakeResponse(200, json_data={"Cus": []})]
+        post_r = (
+            [_FakeResponse(401)] + post_r + [_FakeResponse(200, json_data={"Cus": []})]
+        )
         api._session = _FakeSession(get_r, post_r)
 
         result = await api.get_user_values()
@@ -224,7 +228,10 @@ class TestRetryOn425And503:
     async def test_503_retries_and_succeeds(self):
         api = await _authenticated_api()
         api._session = _FakeSession(
-            post_responses=[_FakeResponse(503), _FakeResponse(200, json_data={"Cus": []})]
+            post_responses=[
+                _FakeResponse(503),
+                _FakeResponse(200, json_data={"Cus": []}),
+            ]
         )
         with patch("asyncio.sleep", new_callable=AsyncMock):
             result = await api.get_user_values()
@@ -233,9 +240,11 @@ class TestRetryOn425And503:
     async def test_persistent_503_raises_connection_error(self):
         api = await _authenticated_api()
         api._session = _FakeSession(post_responses=[_FakeResponse(503)] * 4)
-        with patch("asyncio.sleep", new_callable=AsyncMock):
-            with pytest.raises(MijnIstaConnectionError):
-                await api.get_user_values()
+        with (
+            patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(MijnIstaConnectionError),
+        ):
+            await api.get_user_values()
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +259,9 @@ class TestMonthValuesShardsPolling:
             post_responses=[
                 _FakeResponse(200, json_data={"hs": 1, "sh": 3, "mc": []}),
                 _FakeResponse(200, json_data={"hs": 2, "sh": 3, "mc": []}),
-                _FakeResponse(200, json_data={"hs": 3, "sh": 3, "mc": [{"y": 2024, "m": 11}]}),
+                _FakeResponse(
+                    200, json_data={"hs": 3, "sh": 3, "mc": [{"y": 2024, "m": 11}]}
+                ),
             ]
         )
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
@@ -277,7 +288,9 @@ class TestMonthValuesShardsPolling:
         api = await _authenticated_api()
         api._session = _FakeSession(
             post_responses=[
-                _FakeResponse(200, json_data={"hs": 1, "sh": 20, "mc": [{"y": 2024, "m": 11}]}),
+                _FakeResponse(
+                    200, json_data={"hs": 1, "sh": 20, "mc": [{"y": 2024, "m": 11}]}
+                ),
             ]
         )
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
@@ -288,9 +301,15 @@ class TestMonthValuesShardsPolling:
     async def test_401_during_shard_poll_reauthenticates(self):
         api = await _authenticated_api()
         get_r, post_r = _login_sequence()
-        post_r = [_FakeResponse(401)] + post_r + [
-            _FakeResponse(200, json_data={"hs": 1, "sh": 1, "mc": [{"y": 2024, "m": 11}]})
-        ]
+        post_r = (
+            [_FakeResponse(401)]
+            + post_r
+            + [
+                _FakeResponse(
+                    200, json_data={"hs": 1, "sh": 1, "mc": [{"y": 2024, "m": 11}]}
+                )
+            ]
+        )
         api._session = _FakeSession(get_r, post_r)
         with patch("asyncio.sleep", new_callable=AsyncMock):
             result = await api.get_month_values("cuid-1")

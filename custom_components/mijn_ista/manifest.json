@@ -1,11 +1,11 @@
 {
   "domain": "mijn_ista",
   "name": "ista Nederland (mijn.ista.nl)",
-  "codeowners": ["@aalaei"],
+  "codeowners": ["@JoostHazelzet"],
   "config_flow": true,
-  "documentation": "https://github.com/aalaei/ha-mijn-ista",
+  "documentation": "https://github.com/JoostHazelzet/ha-mijn-ista",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/aalaei/ha-mijn-ista/issues",
+  "issue_tracker": "https://github.com/JoostHazelzet/ha-mijn-ista/issues",
   "requirements": ["mijn-ista-api==0.2.0"],
   "version": "1.1.0"
 }

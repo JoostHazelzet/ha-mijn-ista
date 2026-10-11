@@ -11,8 +11,9 @@ dependencies = [
     "ipykernel",
     "ipywidgets>=8.0.0",
 
-    # Keep in sync with custom_components/mijn_ista/manifest.json
-    "mijn-ista-api==0.2.0",
+    # Local API development; Home Assistant adoption waits for publication.
+    "mijn-ista-api-community==0.2.0",
+    "mijn-ista-client==0.1.0",
     "aiohttp",
 
     "python-dotenv",
@@ -21,3 +22,7 @@ dependencies = [
 [tool.uv]
 # This repo is not an installable package; only manage the environment.
 package = false
+
+[tool.uv.sources]
+mijn-ista-api-community = { path = "packages/mijn-ista-api", editable = true }
+mijn-ista-client = { path = "packages/mijn-ista-client", editable = true }
