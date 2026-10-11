@@ -57,7 +57,7 @@ All sensors are grouped under a single **ista NL** device per property in the Ho
 
 1. Click the **Add repository** button above, or go to **HACS → Integrations → ⋮ → Custom repositories** and add:
    ```
-   https://github.com/aalaei/ha-mijn-ista
+   https://github.com/joosthazelzet/ha-mijn-ista
    ```
    with category **Integration**.
 2. Search for **ista Nederland (mijn.ista.nl)** in HACS and install it.
