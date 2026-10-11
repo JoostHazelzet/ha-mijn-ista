@@ -222,9 +222,9 @@ def mock_config_entry(hass):
 
 @pytest.fixture
 def mock_api():
-    """Patch MijnIstaAPI so no real HTTP calls are made."""
+    """Patch ResilientMijnIstaAPI so no real HTTP calls are made."""
     with patch(
-        "custom_components.mijn_ista.config_flow.MijnIstaAPI", autospec=True
+        "custom_components.mijn_ista.config_flow.ResilientMijnIstaAPI", autospec=True
     ) as mock_cls:
         instance = mock_cls.return_value
         instance.authenticate = AsyncMock()

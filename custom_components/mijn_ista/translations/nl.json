@@ -17,16 +17,25 @@
           "username": "Gebruikersnaam of e-mailadres",
           "password": "Wachtwoord"
         }
+      },
+      "reauth_confirm": {
+        "title": "Opnieuw aanmelden bij mijn.ista.nl",
+        "description": "mijn.ista.nl heeft het opgeslagen wachtwoord voor {username} geweigerd. Voer het huidige wachtwoord in.",
+        "data": {
+          "password": "Wachtwoord"
+        }
       }
     },
     "error": {
       "invalid_auth": "Ongeldige gebruikersnaam/e-mailadres of wachtwoord.",
       "cannot_connect": "Kan geen verbinding maken met mijn.ista.nl. Controleer je internetverbinding.",
-      "unknown": "Er is een onverwachte fout opgetreden."
+      "unknown": "Er is een onverwachte fout opgetreden.",
+      "rate_limited": "Te veel inlogpogingen in korte tijd. Wacht {retry_after} seconden en probeer het opnieuw."
     },
     "abort": {
       "already_configured": "Dit account is al geconfigureerd.",
-      "reconfigure_successful": "Inloggegevens zijn bijgewerkt."
+      "reconfigure_successful": "Inloggegevens zijn bijgewerkt.",
+      "reauth_successful": "Opnieuw aanmelden is gelukt."
     }
   },
   "options": {

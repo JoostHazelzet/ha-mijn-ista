@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 
+from custom_components.mijn_ista.api import get_shared, stash_handoff
 from custom_components.mijn_ista.const import CONF_UPDATE_INTERVAL, DOMAIN
 
 from .conftest import MOCK_AVG_VALUES, MOCK_MONTH_VALUES, MOCK_USER_VALUES
@@ -45,7 +46,7 @@ class TestSetupEntry:
         entry.add_to_hass(hass)
 
         with (
-            patch("custom_components.mijn_ista.MijnIstaAPI"),
+            patch("custom_components.mijn_ista.ResilientMijnIstaAPI"),
             patch(
                 "custom_components.mijn_ista.MijnIstaCoordinator",
                 return_value=_make_mock_coordinator(hass),
@@ -68,14 +69,14 @@ class TestSetupEntry:
 
         captured_lang = {}
 
-        def _capture_api(session, username, password, lang="en-GB"):
+        def _capture_api(session, username, password, *, shared, lang="en-GB"):
             captured_lang["lang"] = lang
             m = MagicMock()
             return m
 
         with (
             patch(
-                "custom_components.mijn_ista.MijnIstaAPI", side_effect=_capture_api
+                "custom_components.mijn_ista.ResilientMijnIstaAPI", side_effect=_capture_api
             ),
             patch(
                 "custom_components.mijn_ista.MijnIstaCoordinator",
@@ -97,13 +98,13 @@ class TestSetupEntry:
 
         captured_lang = {}
 
-        def _capture_api(session, username, password, lang="en-GB"):
+        def _capture_api(session, username, password, *, shared, lang="en-GB"):
             captured_lang["lang"] = lang
             return MagicMock()
 
         with (
             patch(
-                "custom_components.mijn_ista.MijnIstaAPI", side_effect=_capture_api
+                "custom_components.mijn_ista.ResilientMijnIstaAPI", side_effect=_capture_api
             ),
             patch(
                 "custom_components.mijn_ista.MijnIstaCoordinator",
@@ -124,6 +125,50 @@ class TestSetupEntry:
 # ---------------------------------------------------------------------------
 
 
+class TestSessionHandoff:
+    async def _setup(self, hass, api_cls_patch):
+        entry = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, options=ENTRY_OPTIONS)
+        entry.add_to_hass(hass)
+        with (
+            api_cls_patch,
+            patch(
+                "custom_components.mijn_ista.MijnIstaCoordinator",
+                return_value=_make_mock_coordinator(hass),
+            ) as coord_cls,
+            patch(
+                "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+                return_value=True,
+            ),
+        ):
+            assert await hass.config_entries.async_setup(entry.entry_id)
+        return coord_cls
+
+    async def test_reuses_matching_flow_session(self, hass: HomeAssistant):
+        hass.config.language = "en"
+        flow_api = MagicMock()
+        flow_api.matches.return_value = True
+        stash_handoff(get_shared(hass), flow_api, ENTRY_DATA[CONF_USERNAME])
+
+        api_cls = patch("custom_components.mijn_ista.ResilientMijnIstaAPI")
+        coord_cls = await self._setup(hass, api_cls)
+
+        assert coord_cls.call_args.args[2] is flow_api
+        assert coord_cls.call_args.kwargs["authenticated"] is True
+        flow_api.matches.assert_called_once_with("test@example.com", "secret", "en-GB")
+
+    async def test_mismatching_flow_session_is_discarded(self, hass: HomeAssistant):
+        flow_api = MagicMock()
+        flow_api.matches.return_value = False
+        stash_handoff(get_shared(hass), flow_api, ENTRY_DATA[CONF_USERNAME])
+
+        api_cls = patch("custom_components.mijn_ista.ResilientMijnIstaAPI")
+        coord_cls = await self._setup(hass, api_cls)
+
+        flow_api.session.detach.assert_called_once()
+        assert coord_cls.call_args.args[2] is not flow_api
+        assert coord_cls.call_args.kwargs["authenticated"] is False
+
+
 class TestUnloadEntry:
     async def test_unload_entry_succeeds(self, hass: HomeAssistant):
         entry = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, options=ENTRY_OPTIONS)
@@ -132,7 +177,7 @@ class TestUnloadEntry:
         coord = _make_mock_coordinator(hass)
 
         with (
-            patch("custom_components.mijn_ista.MijnIstaAPI"),
+            patch("custom_components.mijn_ista.ResilientMijnIstaAPI"),
             patch(
                 "custom_components.mijn_ista.MijnIstaCoordinator",
                 return_value=coord,

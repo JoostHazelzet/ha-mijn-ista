@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,6 +16,8 @@ from mijn_ista_api import MijnIstaAuthError, MijnIstaConnectionError
 from custom_components.mijn_ista.const import CONF_UPDATE_INTERVAL, DOMAIN
 from custom_components.mijn_ista.coordinator import (
     MijnIstaCoordinator,
+    login_budget,
+    properties_budget,
     AnnualMeterSummary,
     AnnualSummary,
     CustomerData,
@@ -339,3 +342,90 @@ class TestCoordinatorUpdate:
         # Should still return data, just with empty building averages
         assert "test-cuid-abc123" in result
         assert result["test-cuid-abc123"].building_averages == {}
+
+
+# ---------------------------------------------------------------------------
+# Cycle 1: retry interval, session handoff, first-refresh behaviour, budgets
+# ---------------------------------------------------------------------------
+
+
+class TestCoordinatorResilience:
+    @pytest.fixture
+    def mock_api(self):
+        api = MagicMock()
+        api.authenticate = AsyncMock()
+        api.get_user_values = AsyncMock(return_value=MOCK_USER_VALUES)
+        api.get_month_values = AsyncMock(return_value=MOCK_MONTH_VALUES)
+        api.get_consumption_averages = AsyncMock(return_value=MOCK_AVG_VALUES)
+        return api
+
+    @pytest.fixture
+    def mock_entry(self):
+        entry = MagicMock()
+        entry.data = {}
+        entry.options = {CONF_UPDATE_INTERVAL: 6}
+        entry.entry_id = "test-entry-id"
+        return entry
+
+    async def test_failure_shortens_interval_and_success_restores_it(
+        self, hass: HomeAssistant, mock_api, mock_entry
+    ):
+        coord = MijnIstaCoordinator(hass, mock_entry, mock_api)
+        assert coord.update_interval == timedelta(hours=6)
+
+        mock_api.get_user_values.side_effect = MijnIstaConnectionError("down")
+        with pytest.raises(UpdateFailed):
+            await coord._async_update_data()
+        assert coord.update_interval == timedelta(minutes=30)
+
+        mock_api.get_user_values.side_effect = None
+        await coord._async_update_data()
+        assert coord.update_interval == timedelta(hours=6)
+
+    async def test_first_refresh_uses_one_attempt_without_waiting(
+        self, hass: HomeAssistant, mock_api, mock_entry
+    ):
+        coord = MijnIstaCoordinator(hass, mock_entry, mock_api)
+        await coord._async_update_data()
+        assert mock_api.login_attempts == 1
+        assert mock_api.login_max_wait == 0
+        assert mock_api.get_month_values.await_args.kwargs["quick"] is True
+
+        await coord._async_update_data()
+        assert mock_api.login_attempts == 3
+        assert mock_api.login_max_wait is None
+        assert mock_api.get_month_values.await_args.kwargs["quick"] is False
+
+    async def test_first_refresh_stays_quick_after_failure(
+        self, hass: HomeAssistant, mock_api, mock_entry
+    ):
+        mock_api.authenticate.side_effect = MijnIstaConnectionError("rate limited")
+        coord = MijnIstaCoordinator(hass, mock_entry, mock_api)
+        with pytest.raises(UpdateFailed):
+            await coord._async_update_data()
+        mock_api.authenticate.side_effect = None
+        await coord._async_update_data()
+        assert mock_api.get_month_values.await_args.kwargs["quick"] is True
+
+    async def test_handed_over_session_skips_first_login_only(
+        self, hass: HomeAssistant, mock_api, mock_entry
+    ):
+        coord = MijnIstaCoordinator(hass, mock_entry, mock_api, authenticated=True)
+        await coord._async_update_data()
+        mock_api.authenticate.assert_not_awaited()
+        await coord._async_update_data()
+        mock_api.authenticate.assert_awaited_once()
+
+
+class TestBudgets:
+    def test_login_budget(self):
+        assert login_budget(0, waits=True) == 0
+        assert login_budget(1, waits=False) == 90
+        assert login_budget(3, waits=True) == 3 * (120 + 90)
+
+    def test_properties_budget_grows_with_properties(self):
+        one = properties_budget(1, quick=False)
+        two = properties_budget(2, quick=False)
+        assert two > one > properties_budget(1, quick=True)
+        # Always includes one re-login at the regular pace.
+        assert properties_budget(0, quick=True) == login_budget(1, waits=True)

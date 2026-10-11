@@ -7,5 +7,5 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/aalaei/ha-mijn-ista/issues",
   "requirements": ["mijn-ista-api==0.2.0"],
-  "version": "1.0.3"
+  "version": "1.1.0"
 }

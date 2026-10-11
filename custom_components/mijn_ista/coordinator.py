@@ -13,9 +13,21 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
+from mijn_ista_api import MijnIstaAuthError, MijnIstaConnectionError
 
-from mijn_ista_api import MijnIstaAPI, MijnIstaAuthError, MijnIstaConnectionError
-from .const import CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL, DOMAIN
+from .api import ResilientMijnIstaAPI
+from .const import (
+    CONF_UPDATE_INTERVAL,
+    DEFAULT_UPDATE_INTERVAL,
+    DOMAIN,
+    LOGIN_ATTEMPT_TIMEOUT_S,
+    LOGIN_ATTEMPTS,
+    MIN_LOGIN_GAP_S,
+    MONTH_BUDGET_FULL_S,
+    MONTH_BUDGET_QUICK_S,
+    REQUEST_BUDGET_S,
+    RETRY_INTERVAL_MINUTES,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -271,6 +283,23 @@ def _parse_customer(
     )
 
 
+# ── refresh timeout budget (NFR-5) ──────────────────────────────────────────
+
+
+def login_budget(attempts: int, *, waits: bool) -> float:
+    """Worst-case seconds for ``attempts`` logins, including login-gate waits."""
+    return attempts * ((MIN_LOGIN_GAP_S if waits else 0) + LOGIN_ATTEMPT_TIMEOUT_S)
+
+
+def properties_budget(properties: int, *, quick: bool) -> float:
+    """Worst-case seconds to fetch averages and month values for all properties.
+
+    Includes one re-login (library retry after HTTP 401) at the regular pace.
+    """
+    month = (MONTH_BUDGET_QUICK_S if quick else MONTH_BUDGET_FULL_S) + REQUEST_BUDGET_S
+    return properties * (REQUEST_BUDGET_S + month) + login_budget(1, waits=True)
+
+
 # ── coordinator ─────────────────────────────────────────────────────────────
 
 
@@ -285,38 +314,69 @@ class MijnIstaCoordinator(DataUpdateCoordinator):
         self,
         hass: HomeAssistant,
         entry: ConfigEntry,
-        api: MijnIstaAPI,
+        api: ResilientMijnIstaAPI,
+        *,
+        authenticated: bool = False,
     ) -> None:
         self.api = api
-        # Use quick MonthValues polling on the very first fetch so HA startup
-        # is not blocked for a full minute. Subsequent scheduled updates use
-        # full polling for complete history.
+        # The first fetch runs during setup: quick MonthValues polling, a single login
+        # attempt and no waiting for the login gate, so Home Assistant startup is not
+        # blocked. A failure there becomes ConfigEntryNotReady and HA retries setup.
         self._first_refresh_done = False
+        # True when the config flow handed over an already authenticated session.
+        self._skip_next_login = authenticated
+        self._regular_interval = timedelta(
+            hours=entry.options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
+        )
         super().__init__(
             hass=hass,
             logger=_LOGGER,
             name=f"{DOMAIN}-{entry.entry_id}",
             update_method=self._async_update_data,
-            update_interval=timedelta(
-                hours=entry.options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
-            ),
+            update_interval=self._regular_interval,
         )
 
     async def _async_update_data(self) -> dict[str, CustomerData]:
         try:
-            async with asyncio.timeout(100):
-                return await self._fetch_all()
-        except TimeoutError as exc:
-            raise UpdateFailed("mijn.ista.nl data fetch timed out after 100s") from exc
+            data = await self._fetch_with_timeout()
+        except UpdateFailed:
+            # FR-7: retry sooner than the regular interval, back to normal after success.
+            self.update_interval = min(
+                self._regular_interval, timedelta(minutes=RETRY_INTERVAL_MINUTES)
+            )
+            raise
+        self.update_interval = self._regular_interval
+        return data
 
-    async def _fetch_all(self) -> dict[str, CustomerData]:
+    async def _fetch_with_timeout(self) -> dict[str, CustomerData]:
+        first = not self._first_refresh_done
+        self.api.login_attempts = 1 if first else LOGIN_ATTEMPTS
+        self.api.login_max_wait = 0 if first else None
+        login = 0 if self._skip_next_login else self.api.login_attempts
+        budget = login_budget(login, waits=not first) + REQUEST_BUDGET_S
         try:
-            await self.api.authenticate()
+            async with asyncio.timeout(budget) as timeout:
+                return await self._fetch_all(timeout)
+        except TimeoutError as exc:
+            raise UpdateFailed("mijn.ista.nl data fetch timed out") from exc
+
+    async def _fetch_all(self, timeout: asyncio.Timeout) -> dict[str, CustomerData]:
+        quick = not self._first_refresh_done
+        try:
+            if self._skip_next_login:
+                self._skip_next_login = False
+            else:
+                await self.api.authenticate()
             user_data = await self.api.get_user_values()
+            customers = user_data.get("Cus", [])
+            loop = asyncio.get_running_loop()
+            timeout.reschedule(
+                loop.time() + properties_budget(len(customers), quick=quick)
+            )
 
             result: dict[str, CustomerData] = {}
 
-            for cus in user_data.get("Cus", []):
+            for cus in customers:
                 cuid = cus["Cuid"]
                 cur = cus.get("curConsumption", {})
                 periods = cur.get("BillingPeriods", [])
@@ -343,9 +403,7 @@ class MijnIstaCoordinator(DataUpdateCoordinator):
                         )
 
                 try:
-                    month_data = await self.api.get_month_values(
-                        cuid, quick=not self._first_refresh_done
-                    )
+                    month_data = await self.api.get_month_values(cuid, quick=quick)
                 except MijnIstaConnectionError:
                     _LOGGER.warning(
                         "mijn.ista.nl: monthly data unavailable for %s, "

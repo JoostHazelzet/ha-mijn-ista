@@ -82,7 +82,7 @@ Fill in the following fields when adding the integration:
 | **Email** | Your mijn.ista.nl login e-mail address |
 | **Password** | Your mijn.ista.nl password |
 | **Language** | `English` or `Nederlands` — affects sensor names |
-| **Update interval** | How often to poll the API (1–24 hours, default 24 h) |
+| **Update interval** | How often to poll the API (1–24 hours, default 6 h) |
 
 > Credentials are validated against the live API before the entry is created.
 
@@ -121,7 +121,8 @@ Building average sensors show the average consumption for your entire building o
 
 ## Notes and limitations
 
-- **Update frequency**: mijn.ista.nl data is updated every 3 days for smart meters, or monthly for traditional meters. Setting the poll interval shorter than 24 hours will not produce more up-to-date data.
+- **Update frequency**: mijn.ista.nl data is updated every 3 days for smart meters, or monthly for traditional meters. The default poll interval is 6 hours; polling more often does not produce more up-to-date data. After a failed refresh the integration retries after 30 minutes and then returns to the regular interval.
+- **Gentle on the ista servers**: logins to mijn.ista.nl are at least 120 s apart and data requests at least 5 s apart, shared by all ista NL entries. A refresh can therefore take a few minutes, especially with several properties.
 - **No cost sensors**: The NL portal API does not expose billing amounts in euros — only consumption units (GJ, kWh, m³, etc.).
 - **Dutch API**: Service names returned by the API are always in Dutch. When language is set to English, the integration translates them client-side (Verwarming → Heating, Warm water → Hot water, etc.). Unknown service names are passed through as-is.
 - **Single property**: If your account has multiple properties (Cuid), each creates its own ista NL device.
@@ -133,7 +134,10 @@ Building average sensors show the average consumption for your entire building o
 
 | Symptom | Likely cause |
 |---|---|
-| Integration fails to set up | Wrong credentials — verify by logging in at mijn.ista.nl |
+| Integration fails to set up | Wrong credentials — verify by logging in at mijn.ista.nl. A temporary login problem makes Home Assistant retry the setup automatically |
+| "Reauthentication required" repair | mijn.ista.nl rejected the stored password twice in a row. Open the repair and enter the current password |
+| "Too many login attempts" in the setup dialog | Logins are spaced at least 120 s apart. Wait the indicated number of seconds and submit again |
+| Warnings about "session cookie chunks not sent" | The HTTP client dropped part of the login cookie. Update the integration and report the aiohttp version in an issue |
 | All sensors unavailable | API unreachable or account suspended |
 | Temperature sensor unavailable | KNMI data not yet finalized for the latest month — normal |
 | Sensor values stale | mijn.ista.nl data updates every 3 days at most |

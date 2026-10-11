@@ -7,22 +7,15 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from mijn_ista_api import MijnIstaAPI
+from .api import (
+    ResilientMijnIstaAPI,
+    api_language,
+    async_create_ista_session,
+    get_shared,
+    take_handoff,
+)
 from .coordinator import MijnIstaCoordinator
-
-#### START WORKAROUND
-# See https://github.com/aalaei/mijn-ista-api/pull/1
-_orig_authenticate = MijnIstaAPI.authenticate
-
-async def _authenticate_with_clean_jar(self) -> None:
-    self._session.cookie_jar.clear_domain("ista.nl")
-    self._session.cookie_jar.clear_domain("ista.com")
-    await _orig_authenticate(self)
-
-MijnIstaAPI.authenticate = _authenticate_with_clean_jar
-#### END WORKAROUND
 
 PLATFORMS = [Platform.SENSOR]
 
@@ -49,16 +42,29 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
 
 async def async_setup_entry(hass: HomeAssistant, entry: MijnIstaConfigEntry) -> bool:
     """Set up mijn.ista.nl from a config entry."""
-    session = async_get_clientsession(hass)
-    # Derive API language from the HA language setting.
-    api_lang = "nl-NL" if hass.config.language.startswith("nl") else "en-GB"
-    api = MijnIstaAPI(
-        session,
-        entry.data[CONF_USERNAME],
-        entry.data[CONF_PASSWORD],
-        lang=api_lang,
+    shared = get_shared(hass)
+    lang = api_language(hass)
+
+    # Reuse the session the config flow just authenticated (avoids a second login
+    # within the login gap). Otherwise use a private session for this entry.
+    api = take_handoff(shared, entry.data[CONF_USERNAME])
+    authenticated = api is not None and api.matches(
+        entry.data[CONF_USERNAME], entry.data[CONF_PASSWORD], lang
     )
-    coordinator = MijnIstaCoordinator(hass, entry, api)
+    if authenticated:
+        entry.async_on_unload(api.session.detach)
+        _LOGGER.debug("Reusing the session authenticated by the config flow")
+    else:
+        if api is not None:
+            api.session.detach()
+        api = ResilientMijnIstaAPI(
+            async_create_ista_session(hass, shared),
+            entry.data[CONF_USERNAME],
+            entry.data[CONF_PASSWORD],
+            shared=shared,
+            lang=lang,
+        )
+    coordinator = MijnIstaCoordinator(hass, entry, api, authenticated=authenticated)
     await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = coordinator

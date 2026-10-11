@@ -17,16 +17,25 @@
           "username": "Username or email",
           "password": "Password"
         }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate mijn.ista.nl",
+        "description": "mijn.ista.nl rejected the stored password for {username}. Enter the current password.",
+        "data": {
+          "password": "Password"
+        }
       }
     },
     "error": {
       "invalid_auth": "Invalid username/email or password.",
       "cannot_connect": "Could not connect to mijn.ista.nl. Check your internet connection.",
-      "unknown": "An unexpected error occurred."
+      "unknown": "An unexpected error occurred.",
+      "rate_limited": "Too many login attempts in a short time. Wait {retry_after} seconds and try again."
     },
     "abort": {
       "already_configured": "This account is already configured.",
-      "reconfigure_successful": "Credentials updated successfully."
+      "reconfigure_successful": "Credentials updated successfully.",
+      "reauth_successful": "Reauthentication was successful."
     }
   },
   "options": {

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 
 from mijn_ista_api import MijnIstaAuthError, MijnIstaConnectionError
+from custom_components.mijn_ista.api import MijnIstaRateLimited, get_shared
 from custom_components.mijn_ista.const import CONF_UPDATE_INTERVAL, DOMAIN
 
 from .conftest import MOCK_USER_VALUES
@@ -24,10 +25,11 @@ VALID_INPUT = {
 
 
 def _patch_api(authenticate=None, get_user_values=None):
-    """Return a context manager that patches MijnIstaAPI in config_flow and blocks real setup."""
+    """Return a context manager that patches ResilientMijnIstaAPI in config_flow and blocks real setup."""
     from contextlib import ExitStack, contextmanager
 
     mock_instance = AsyncMock()
+    mock_instance.session = MagicMock()
     mock_instance.authenticate = authenticate or AsyncMock()
     mock_instance.get_user_values = get_user_values or AsyncMock(
         return_value=MOCK_USER_VALUES
@@ -37,8 +39,12 @@ def _patch_api(authenticate=None, get_user_values=None):
     def _ctx():
         with (
             patch(
-                "custom_components.mijn_ista.config_flow.MijnIstaAPI",
+                "custom_components.mijn_ista.config_flow.ResilientMijnIstaAPI",
                 return_value=mock_instance,
+            ),
+            patch(
+                "custom_components.mijn_ista.config_flow.async_create_ista_session",
+                return_value=MagicMock(),
             ),
             patch(
                 "custom_components.mijn_ista.async_setup_entry",
@@ -250,3 +256,86 @@ class TestReconfigureStep:
 
         assert result["type"] == FlowResultType.FORM
         assert result["errors"] == {"base": "invalid_auth"}
+
+
+# ---------------------------------------------------------------------------
+# Cycle 1: rate limiting, session handoff, reauthentication
+# ---------------------------------------------------------------------------
+
+
+async def _create_entry(hass: HomeAssistant) -> config_entries.ConfigEntry:
+    with _patch_api():
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input=VALID_INPUT
+        )
+        await hass.async_block_till_done()
+    return hass.config_entries.async_entries(DOMAIN)[0]
+
+
+class TestCycle1Flow:
+    async def test_success_stashes_authenticated_client(self, hass: HomeAssistant):
+        with _patch_api() as api:
+            result = await hass.config_entries.flow.async_init(
+                DOMAIN, context={"source": config_entries.SOURCE_USER}
+            )
+            await hass.config_entries.flow.async_configure(
+                result["flow_id"], user_input=VALID_INPUT
+            )
+        assert get_shared(hass).handoff["test@example.com"][0] is api
+        assert api.login_attempts == 1
+        assert api.invalid_confirmations == 1
+        api.session.detach.assert_not_called()
+
+    async def test_rate_limited_shows_retry_after(self, hass: HomeAssistant):
+        auth_mock = AsyncMock(side_effect=MijnIstaRateLimited(41.2))
+        with _patch_api(authenticate=auth_mock) as api:
+            result = await hass.config_entries.flow.async_init(
+                DOMAIN, context={"source": config_entries.SOURCE_USER}
+            )
+            result = await hass.config_entries.flow.async_configure(
+                result["flow_id"], user_input=VALID_INPUT
+            )
+        assert result["type"] == FlowResultType.FORM
+        assert result["errors"] == {"base": "rate_limited"}
+        assert result["description_placeholders"]["retry_after"] == "42"
+        api.session.detach.assert_called_once()
+
+    async def test_reauth_success_updates_password(self, hass: HomeAssistant):
+        entry = await _create_entry(hass)
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": config_entries.SOURCE_REAUTH, "entry_id": entry.entry_id},
+            data=dict(entry.data),
+        )
+        assert result["type"] == FlowResultType.FORM
+        assert result["step_id"] == "reauth_confirm"
+        assert result["description_placeholders"]["username"] == "test@example.com"
+
+        with _patch_api():
+            result = await hass.config_entries.flow.async_configure(
+                result["flow_id"], user_input={CONF_PASSWORD: "new-secret"}
+            )
+            await hass.async_block_till_done()
+
+        assert result["type"] == FlowResultType.ABORT
+        assert result["reason"] == "reauth_successful"
+        assert entry.data[CONF_PASSWORD] == "new-secret"
+        assert entry.data[CONF_USERNAME] == "test@example.com"
+
+    async def test_reauth_wrong_password_shows_error(self, hass: HomeAssistant):
+        entry = await _create_entry(hass)
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": config_entries.SOURCE_REAUTH, "entry_id": entry.entry_id},
+            data=dict(entry.data),
+        )
+        with _patch_api(authenticate=AsyncMock(side_effect=MijnIstaAuthError)):
+            result = await hass.config_entries.flow.async_configure(
+                result["flow_id"], user_input={CONF_PASSWORD: "wrong"}
+            )
+        assert result["type"] == FlowResultType.FORM
+        assert result["errors"] == {"base": "invalid_auth"}
+        assert entry.data[CONF_PASSWORD] == "secret"
