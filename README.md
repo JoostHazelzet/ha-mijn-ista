@@ -59,7 +59,7 @@ See the [architecture requirements](REQUIREMENTS.md#11-architecture-rule-source-
 ## Requirements
 
 - A valid [mijn.ista.nl](https://mijn.ista.nl) account (Dutch ista portal)
-- Home Assistant 2023.x or newer
+- Home Assistant 2024.1.0 or newer
 - [HACS](https://hacs.xyz/) (recommended) or manual installation
 
 ---

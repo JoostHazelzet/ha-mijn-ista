@@ -7,5 +7,5 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/JoostHazelzet/mijn_ista_nl/issues",
   "requirements": ["mijn-ista-api==0.2.0"],
-  "version": "1.1.0"
+  "version": "0.1.0"
 }

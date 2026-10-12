@@ -288,7 +288,7 @@ ista publishes no rate limits for `mijn.ista.nl` or `login.ista.com`. The limits
 ## 7. Suggested future work backlog
 
 ### Cycle 1 — authentication reliability (first)
-Status (v1.1.0): steps 1–8 are implemented in `custom_components/mijn_ista/api.py`, `coordinator.py`, `__init__.py` and `config_flow.py`, with tests in `tests/components/mijn_ista/test_resilient_api.py`. Still open: the upstream reports from step 2, and step 9.
+Status (v0.1.0): steps 1–8 are implemented in `custom_components/mijn_ista/api.py`, `coordinator.py`, `__init__.py` and `config_flow.py`, with tests in `tests/components/mijn_ista/test_resilient_api.py`. Still open: the upstream reports from step 2, and step 9.
 
 1. ✅ Use a separate `aiohttp` session and cookie jar for each config entry, and a temporary one for the config flow.
 2. ✅ Use a cookie jar that sends all session-cookie chunks, for example a `CookieJar` subclass with aiohttp's header limit disabled, passed to `async_create_clientsession(..., cookie_jar=...)`. Add a test that `filter_cookies` returns all four chunks for realistic sizes. Report the problem upstream to aio-libs/aiohttp and aalaei/mijn-ista-api. This is the most important fix. *(Upstream reports still open.)*
