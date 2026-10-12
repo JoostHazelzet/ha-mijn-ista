@@ -7,15 +7,25 @@ name = "mijn-ista-client"
 version = "0.1.0"
 description = "Standalone resilient async client for the Dutch mijn.ista.nl portal"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Ali Alaei" },
+    { name = "Joost Hazelzet" },
+]
+maintainers = [{ name = "Joost Hazelzet" }]
 requires-python = ">=3.13"
 dependencies = [
-    "mijn-ista-api-community==0.2.0",
     "aiohttp>=3.12",
     "yarl>=1.9",
 ]
 
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[project.urls]
+Repository = "https://github.com/JoostHazelzet/mijn_ista_nl"
+Issues = "https://github.com/JoostHazelzet/mijn_ista_nl/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mijn_ista_client"]

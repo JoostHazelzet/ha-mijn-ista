@@ -2,21 +2,18 @@
 
 An independently installable async Python client for the Dutch
 `mijn.ista.nl` portal. No Home Assistant imports, installation, config entries,
-or Home Assistant-managed event loop are required. This package extracts the
-integration's resilient client and uses the
-[locally maintained API core](../mijn-ista-api/README.md),
-`mijn-ista-api-community==0.2.0`. It no longer depends on the original published
-`mijn-ista-api` distribution. The imported authentication protocol is preserved.
+or Home Assistant-managed event loop are required. One distribution contains
+both the low-level protocol (`mijn_ista_client.api`) and the resilient transport
+(`mijn_ista_client.client`). It has no dependency on either `mijn-ista-api` or
+`mijn-ista-api-community`. The imported authentication protocol is preserved.
 
 ## Install and run
 
 From the repository root, with Python 3.13 or newer:
 
 ```bash
-python -m venv .venv-api
-source .venv-api/bin/activate
-python -m pip install -e './packages/mijn-ista-api[test]' -e './packages/mijn-ista-client[test]'
-python packages/mijn-ista-client/examples/read_consumption.py
+uv sync --locked
+uv run python packages/mijn-ista-client/examples/read_consumption.py
 ```
 
 The example prompts for credentials (the password is hidden), or reads
@@ -24,13 +21,18 @@ The example prompts for credentials (the password is hidden), or reads
 account data: do not commit or share its output. It makes live requests; the
 tests below do not. No credentials or notebook outputs are packaged.
 
-Both packages are unpublished, so install both local paths together. The API
-core keeps the `mijn_ista_api` import namespace: do not co-install the original
-`mijn-ista-api` distribution. If reusing an older development environment,
-uninstall that distribution first and reinstall both local packages.
-The repository's `uv sync` development environment also resolves both packages
-from these local sources, so the existing notebook's `mijn_ista_api` imports use
-the maintained core without notebook changes.
+The package is unpublished. The root uv project installs it in editable mode
+into the repository's `.venv`, also used for notebooks, examples, and tests.
+No package-specific virtual environment is needed. Select the root `.venv`
+kernel in Jupyter and restart existing kernels after migrating imports.
+Older local imports should change from `mijn_ista_api` to `mijn_ista_client`,
+and from `mijn_ista_api.client` to `mijn_ista_client.api`.
+
+Outside this repository, installation requires only one path:
+
+```bash
+python -m pip install -e './packages/mijn-ista-client[test]'
+```
 
 ## Python console or script
 
@@ -89,19 +91,37 @@ adjustable on the client. A gate exceeding `login_max_wait` raises
 ## Offline tests and builds
 
 ```bash
-cd packages/mijn-ista-client
-python -m pytest -q
-cd ../mijn-ista-api
-python -m pytest -q
+uv run --locked pytest -q
+uv run --locked ruff check packages/mijn-ista-client
 ```
 
-This package's tests have their own pytest root and do not load the repository's
-Home Assistant fixtures. For distributable wheels, from this package directory:
+Full lint currently reports four inherited `UP041`/`BLE001` warnings in
+`api.py`; consolidation deliberately preserves the imported protocol behavior.
+
+These run both protocol and resilience tests without loading the integration's
+Home Assistant fixtures. The default repository test selection is standalone.
+Home Assistant tests explicitly use the integration dependency group in the
+same root environment (Python 3.13.2 or newer):
 
 ```bash
-python -m pip wheel --no-deps . --wheel-dir dist
-python -m pip wheel --no-deps ../mijn-ista-api --wheel-dir dist
+uv run --locked --group integration pytest -q tests
 ```
+
+For a distributable wheel, from the repository root:
+
+```bash
+uv build packages/mijn-ista-client --wheel
+```
+
+## Community maintenance and attribution
+
+The protocol originates from [Ali Alaei's mijn-ista-api](https://github.com/aalaei/mijn-ista-api).
+Its complete history through `7ef27e16d60124d0f7f96aae9d8ccf063cbaf932` was
+imported by a non-squashed Git subtree, originally at `packages/mijn-ista-api`.
+Consolidation moves the current source into this package without rewriting
+that history. Original commit IDs, authors, and timestamps remain reachable.
+The [MIT license](LICENSE) and original author attribution are retained in
+the source and packaged wheel.
 
 ## Integration transition
 
@@ -118,6 +138,7 @@ selection, coordinator normalization and exception translation in the integratio
 Remove the old duplicated client implementation in that transition and run both
 test suites. Until then, backport any urgent integration fixes explicitly.
 
-Publish the maintained core as `mijn-ista-api-community` as well, so installing
-the resilient client never pulls the abandoned distribution. These proposed
-distribution names have not been reserved on PyPI.
+Only `mijn-ista-client` needs publication; its distribution name has not been
+reserved on PyPI. The optional integration test group still installs the
+original published API to match the unchanged manifest. Its `mijn_ista_api`
+namespace does not overlap this package's `mijn_ista_client` namespace.

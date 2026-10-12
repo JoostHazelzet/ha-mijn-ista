@@ -11,9 +11,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import aiohttp
-from mijn_ista_api import MijnIstaAPI, MijnIstaAuthError, MijnIstaConnectionError
 from yarl import URL
 
+from .api import MijnIstaAPI, MijnIstaAuthError, MijnIstaConnectionError
 from .const import (
     INVALID_CREDENTIALS_CONFIRMATIONS,
     LOGIN_ATTEMPTS,

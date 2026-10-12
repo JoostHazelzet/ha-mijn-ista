@@ -1,7 +1,6 @@
 """Standalone async API client for mijn.ista.nl; no Home Assistant dependency."""
 
-from mijn_ista_api import MijnIstaAPI, MijnIstaAuthError, MijnIstaConnectionError
-
+from .api import MijnIstaAPI, MijnIstaAuthError, MijnIstaConnectionError
 from .client import (
     IstaCookieJar,
     MijnIstaRateLimited,

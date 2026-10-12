@@ -1,4 +1,14 @@
 {
+  "entity": {
+    "sensor": {
+      "total": {"name": "{service} totaal"},
+      "current_month": {"name": "{service} huidige maand"},
+      "building_average": {"name": "Gebouwgemiddelde {service}"},
+      "normalized": {"name": "Genormaliseerde {service}"},
+      "outdoor_average_temperature": {"name": "Gemiddelde buitentemperatuur"},
+      "last_sync": {"name": "Laatste API-synchronisatie"}
+    }
+  },
   "config": {
     "step": {
       "user": {

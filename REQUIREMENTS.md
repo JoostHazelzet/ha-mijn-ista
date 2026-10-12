@@ -7,10 +7,10 @@ The community repository is `JoostHazelzet/mijn_ista_nl`, detached from the orig
 GitHub fork network with Git history preserved. Repository renaming does not change
 the Home Assistant domain `mijn_ista` or Python package import names.
 
-### 1.1 Architecture rule: raw measurements and Single Source of Truth
+### 1.1 Architecture rule: source-provided measurements and benchmarks
 
-**Mandatory design rule:** the integration's scope shall be strictly limited
-to fetching and publishing raw, atomic measured values from the Ista API.
+**Mandatory design rule:** Ista remains the source of truth for physical readings,
+billing-period and current-month consumption, and source-provided benchmarks.
 Users shall handle historical tracking and comparisons through the native
 Home Assistant Energy Dashboard, Utility Meters, or Grafana with a
 user-managed time-series backend.
@@ -21,7 +21,7 @@ implementation. The responsibility boundary is:
 | Layer | Owns | Shall not own |
 |---|---|---|
 | Ista API | Authoritative measured values and source metadata | Integration-generated substitutes for measurements |
-| Integration | Authentication, rate-limited acquisition, validation, lossless normalization, and publication of individual measurements with verified HA metadata | Historical storage/backfill, consolidation, rollups, comparisons, or estimation |
+| Integration | Authentication, rate-limited acquisition, validation, normalization, and publication of API measurements and benchmarks with verified HA metadata | Historical storage/backfill or independently calculated consumption and estimates |
 | Home Assistant / user-managed tools | Recorder history, Energy Dashboard statistics, Utility Meter cycles, Grafana visualization and comparisons | A requirement for this integration to duplicate their analytics |
 
 In particular:
@@ -33,17 +33,14 @@ In particular:
   source reading dates as `YYYY-MM-DD`, validating numeric values, and mapping
   verified units and device classes are permitted. Missing data shall not
   become invented readings or estimates.
-- Sensor states and attributes shall not expose annual/current/previous-year
-  totals, monthly metrics, sums across meters, year-over-year changes,
-  building averages, or historical datasets, even if supplied by the API.
-  Identity, source reading dates, and applicable reading-quality metadata
-  may accompany individual measurements.
-- The integration shall not fetch endpoints solely for excluded analytics.
-  Broader endpoint support in the standalone API packages does not expand
-  the Home Assistant integration's scope.
-- Feature proposals shall be evaluated against this rule. Requests for
-  history, rollups, and comparisons shall be implemented downstream rather
-  than added to the integration.
+- The integration shall preserve existing physical meter sensors and publish
+  service totals, calendar-month consumption and building averages, normalized
+  heating, monthly outdoor temperature, and the source update timestamp.
+- These metrics shall come from UserValues, ConsumptionValues, MonthValues,
+  and ConsumptionAverages. The integration shall not synthesize readings or
+  assume the first month or billing period in a response is current.
+- Recorder history and historical backfill remain outside the integration.
+  Optional endpoint failures shall be logged and shall not hide valid registers.
 
 This establishes the **Single Source of Truth** philosophy applied by this
 project to Home Assistant: Ista remains authoritative for measurements, while
@@ -58,31 +55,32 @@ The integration follows a standard Home Assistant pattern:
 - a single coordinator in `custom_components/mijn_ista/coordinator.py`
 - sensor entity generation in `custom_components/mijn_ista/sensor.py`
 
-The coordinator authenticates to the external API and extracts current raw meter
-registers from `UserValues` into typed per-property `Cuid` structures. It does
-not fetch monthly history or building averages, or normalize annual comparisons.
-Sensors expose atomic readings only. Home Assistant or external tools own
-historical tracking, rollups, and comparisons. Outdoor-temperature data from
-KNMI is not used or exposed.
+The coordinator normalizes all four API datasets into per-property `Cuid`
+structures. Sensors publish physical readings and source-provided consumption,
+benchmarks, monthly temperature, and update timestamps. Home Assistant owns
+recorded history; no API history is backfilled.
 
 ### 2.1 Standalone API package (local testing stage)
 An independently installable package now lives in
 [`packages/mijn-ista-client`](packages/mijn-ista-client/README.md), imported as
 `mijn_ista_client`. It extracts cookie handling, shared rate limits, login retries,
 credential-rejection classification and month-shard polling from the integration's
-client. It now depends on the locally maintained
-[`mijn-ista-api-community`](packages/mijn-ista-api/README.md) core instead of the
-abandoned author's published `mijn-ista-api` distribution, and on ordinary Python
-HTTP libraries, not Home Assistant. Install both local package paths together.
-The repository's uv development environment resolves both packages to editable
-local sources, so existing notebook imports use the maintained API core.
+client. The same distribution now owns the low-level protocol in
+`mijn_ista_client.api` and the resilient wrapper in `mijn_ista_client.client`.
+It depends only on ordinary Python HTTP libraries, not Home Assistant or
+another Ista distribution. The repository's uv environment installs this single
+package in editable mode. Notebooks, examples, and standalone tests share the
+root `.venv`; Home Assistant test dependencies are an optional `integration`
+group in that same environment.
 
 The original API repository was imported under `packages/mijn-ista-api` using a
 non-squashed Git subtree, preserving its complete history through
 `7ef27e16d60124d0f7f96aae9d8ccf063cbaf932`. The upstream MIT declaration and original
-author attribution are retained. The core's Python import namespace remains
-`mijn_ista_api`; the original and maintained distributions must not coexist in one
-environment. The protocol implementation is unchanged at this stage.
+author attribution are retained in the consolidated package. Moving the source
+does not rewrite the imported history. Local imports now use `mijn_ista_client`;
+the original `mijn_ista_api` namespace remains exclusive to the integration's
+published dependency, so the two can coexist during transition. The protocol
+implementation is unchanged at this stage.
 
 The package can be installed locally in editable mode and exercised from a Python
 console, script or notebook. Its own offline test suite runs without loading the
@@ -100,17 +98,18 @@ See FR-9 and NFR-6 for the required transition.
 
 ### 3.1 Minimize API work
 One `UserValues` request supplies all properties and current meter readings.
-There is no per-property history fetch, shard polling, or averages request in
-the integration. The standalone API packages retain their broader endpoint
-support independently.
+Each property gets one monthly-shard operation and, when an active billing period
+exists, one ConsumptionValues and one ConsumptionAverages operation per refresh.
+All requests use the existing shared throttle; startup uses quick shard polling.
 
 ### 3.2 Normalize raw registers once
 The coordinator owns payload validation and date normalization. Sensors use
 direct service-and-meter lookups rather than recomputing derived values.
 
 ### 3.3 Keep attributes atomic
-Attributes contain only meter identity/type and the API reading date, normalized
-to `YYYY-MM-DD`. There are no history lists, period boundaries, or totals.
+Raw meter attributes retain identity/type and reading date. Service totals expose
+begin/end meter values; monthly sensors expose month and approximation status.
+There are no unbounded history lists.
 
 ### 3.4 Handle partial readings explicitly
 Missing or invalid `EndValue` values must be unavailable, not zero. Missing
@@ -144,7 +143,7 @@ Authentication still fails intermittently despite the clean-cookie-jar workaroun
 ## 4. Functional requirements
 
 ### FR-1: Data refresh
-The integration shall authenticate and refresh raw, atomic measured values
+The integration shall authenticate and refresh measured values and benchmarks
 for each configured property using the external `mijn.ista.nl` API, within
 the architecture boundary defined in section 1.1.
 
@@ -153,8 +152,9 @@ The integration shall support accounts with multiple properties and create a dis
 
 ### FR-3: Sensor generation
 The integration shall generate one sensor per physical meter using the raw
-`EndValue` register. It shall not generate service totals, monthly metrics,
-annual totals, comparisons, building averages, or outdoor-temperature sensors.
+`EndValue` register. In addition, it shall publish source-provided service totals,
+calendar-month consumption and building averages, normalized heating, outdoor
+average temperature, and the source `ed` update timestamp.
 Verified ultego energy and domaqua water registers shall use their physical
 units, appropriate device classes, and `total_increasing`. Unverified meter
 families shall remain raw, without inferred units or statistics metadata.
@@ -168,7 +168,9 @@ The integration shall preserve Dutch service names in Dutch HA language settings
 The integration shall tolerate missing individual readings, dates, and service
 metadata without substituting zero or publishing invented measurements.
 Invalid numeric readings shall be logged and unavailable; invalid dates shall
-be logged and omitted. Structural payload errors shall raise `UpdateFailed`.
+be logged and omitted. Structural UserValues errors shall raise `UpdateFailed`.
+Optional dataset failures shall be logged and leave affected metrics unavailable,
+while UserValues totals and registers remain usable.
 
 ### FR-6: Diagnostics support
 The integration shall expose enough diagnostic detail to help troubleshoot API issues without leaking sensitive credentials.
@@ -229,15 +231,15 @@ ista publishes no rate limits for `mijn.ista.nl` or `login.ista.com`. The limits
 **Data requests:**
 - Data requests to `mijn.ista.nl/api/*` shall start at least **5 seconds** apart, across all `mijn_ista` config entries. This covers `UserValues`, `ConsumptionAverages`, `ConsumptionValues`, every `MonthValues` shard poll, and the library's internal retries after HTTP 503 or 401.
 - The requests that make up a login are covered by the login limit and are not throttled individually.
-- Standalone clients retain throttled `MonthValues` shard support. The raw-only
-  integration does not call this endpoint.
+- MonthValues shard polling shall use the same shared request throttle.
 
 **General:**
 - Waiting for the login gap shall not block Home Assistant startup. If a login is needed while the gap has not elapsed during setup, the integration shall reuse a still-valid session or defer setup (for example with `ConfigEntryNotReady`) rather than sleep.
 - The integration should minimise the number of logins. For example, it can reuse a still-valid session and log in only when ista rejects it. The session lifetime probe in `notebooks/auth_playground.ipynb` (section 4) checks whether a session survives a 6-hour interval.
 - The coordinator's refresh timeout shall cover login attempts including waits,
   the single `UserValues` request, and its possible HTTP 401 reauthentication
-  and data retry. It shall not budget per-property history polling.
+  and data retry. Optional per-property operations shall have separate bounded
+  budgets covering shard polling and potential reauthentication.
 
 ### NFR-6: API isolation and adoption
 - Standalone packaging and tests shall not depend on Home Assistant, its pytest
@@ -256,9 +258,11 @@ ista publishes no rate limits for `mijn.ista.nl` or `login.ista.com`. The limits
 - Community maintenance shall preserve the original integration history and the
   imported API commit IDs, authorship and MIT attribution; GitHub fork-network
   detachment shall not use history rewriting or repository deletion.
-- The standalone dependency graph shall resolve to the locally maintained API
-  source and not install the abandoned `mijn-ista-api` distribution. The maintained
-  core and resilient client shall both be published before runtime adoption.
+- The standalone dependency graph shall resolve to a single locally maintained
+  `mijn-ista-client` distribution containing both protocol and resilience layers,
+  and shall not install the abandoned `mijn-ista-api` distribution. Only the
+  consolidated client requires publication before runtime adoption. Integration
+  tests retain the old dependency until that adoption, without namespace overlap.
 - Detachment from GitHub's fork network is an owner-managed operation, separate
   from source imports. Its irreversible metadata loss must be acknowledged first.
 

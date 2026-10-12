@@ -9,16 +9,18 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from http.cookies import SimpleCookie
-from importlib.metadata import PackageNotFoundError, distribution
+from importlib.metadata import distribution
 from itertools import pairwise
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-from mijn_ista_api import MijnIstaAPI, MijnIstaAuthError, MijnIstaConnectionError
 from mijn_ista_client import (
     IstaCookieJar,
+    MijnIstaAPI,
+    MijnIstaAuthError,
+    MijnIstaConnectionError,
     MijnIstaRateLimited,
     MijnIstaShared,
     ResilientMijnIstaAPI,
@@ -52,13 +54,14 @@ def test_import_never_loads_home_assistant():
             """
 import importlib.abc
 import sys
-class NoHomeAssistant(importlib.abc.MetaPathFinder):
+class NoExternalClients(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname == 'homeassistant' or fullname.startswith('homeassistant.'):
-            raise AssertionError('Home Assistant must not be imported')
-sys.meta_path.insert(0, NoHomeAssistant())
+        if fullname.split('.')[0] in ('homeassistant', 'mijn_ista_api'):
+            raise AssertionError(f'External dependency must not be imported: {fullname}')
+sys.meta_path.insert(0, NoExternalClients())
 import mijn_ista_client
 assert not any(name.startswith('homeassistant') for name in sys.modules)
+assert 'mijn_ista_api' not in sys.modules
 """,
         ],
         capture_output=True,
@@ -66,14 +69,12 @@ assert not any(name.startswith('homeassistant') for name in sys.modules)
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert not any(name.startswith("homeassistant") for name in sys.modules)
 
 
-def test_uses_maintained_distribution_not_abandoned_package():
-    assert distribution("mijn-ista-api-community").version == "0.2.0"
-    with pytest.raises(PackageNotFoundError):
-        distribution("mijn-ista-api")
-    assert "mijn-ista-api-community==0.2.0" in distribution("mijn-ista-client").requires
+def test_protocol_is_owned_by_single_distribution():
+    assert MijnIstaAPI.__module__ == "mijn_ista_client.api"
+    requirements = distribution("mijn-ista-client").requires or []
+    assert not any(req.startswith("mijn-ista-api") for req in requirements)
 
 
 async def test_console_example_fetches_raw_payload(monkeypatch, capsys):

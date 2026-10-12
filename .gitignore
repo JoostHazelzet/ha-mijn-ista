@@ -11,3 +11,5 @@ dist/
 .ipynb_checkpoints/
 .venv-test/
 .venv-api/
+returned_objects/
+

@@ -1,9 +1,10 @@
-"""Raw meter reading sensors for mijn.ista.nl."""
+"""Meter readings, consumption, benchmarks, and diagnostics for mijn.ista.nl."""
 
 from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -12,7 +13,12 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfEnergy, UnitOfVolume
+from homeassistant.const import (
+    EntityCategory,
+    UnitOfEnergy,
+    UnitOfTemperature,
+    UnitOfVolume,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -23,9 +29,10 @@ from homeassistant.helpers.entity_registry import (
     async_get as async_get_entity_registry,
 )
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, MANUFACTURER, SERVICE_NAME_TRANSLATIONS
-from .coordinator import CustomerData, MeterReading, MijnIstaCoordinator
+from .coordinator import CustomerData, MeterReading, MijnIstaCoordinator, ServiceInfo
 
 PARALLEL_UPDATES = 0
 _LOGGER = logging.getLogger(__name__)
@@ -59,6 +66,17 @@ def _translate_service(description: str, ha_language: str) -> str:
 
 def _unique_id(cuid: str, meter: MeterReading) -> str:
     return f"{DOMAIN}_{cuid}_svc{meter.service_id}_dev{meter.meter_id}_reading"
+
+
+def _device_info(cuid: str) -> DeviceInfo:
+    return DeviceInfo(
+        identifiers={(DOMAIN, cuid)},
+        name=f"ista NL {cuid[:8]}",
+        manufacturer=MANUFACTURER,
+        model="mijn.ista.nl",
+        entry_type=DeviceEntryType.SERVICE,
+        configuration_url="https://mijn.ista.nl",
+    )
 
 
 class MijnIstaSensor(CoordinatorEntity[MijnIstaCoordinator], SensorEntity):
@@ -98,14 +116,7 @@ class MijnIstaSensor(CoordinatorEntity[MijnIstaCoordinator], SensorEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._cuid)},
-            name=f"ista NL {self._cuid[:8]}",
-            manufacturer=MANUFACTURER,
-            model="mijn.ista.nl",
-            entry_type=DeviceEntryType.SERVICE,
-            configuration_url="https://mijn.ista.nl",
-        )
+        return _device_info(self._cuid)
 
     @property
     def native_value(self) -> float | None:
@@ -149,10 +160,10 @@ def _build_sensors(
     customer: CustomerData,
     *,
     known_ids: set[str] | None = None,
-) -> list[MijnIstaSensor]:
-    """Build one raw sensor per meter, never service or period totals."""
+) -> list[SensorEntity]:
+    """Build physical meter sensors and source-provided service metrics."""
     services = {s.id: s for s in customer.services}
-    sensors: list[MijnIstaSensor] = []
+    sensors: list[SensorEntity] = []
     for meter in customer.meters.values():
         if known_ids is not None and _unique_id(cuid, meter) in known_ids:
             continue
@@ -163,7 +174,167 @@ def _build_sensors(
             else f"Service {meter.service_id}"
         )
         sensors.append(MijnIstaSensor(coordinator, cuid, meter, label))
+    for service in customer.services:
+        for kind in ("total", "current_month", "building_average", "normalized"):
+            if kind == "normalized" and service.description.casefold() not in (
+                "verwarming",
+                "heating",
+                "space heating",
+            ):
+                continue
+            entity = MijnIstaConsumptionSensor(coordinator, cuid, kind, service)
+            if known_ids is None or entity.unique_id not in known_ids:
+                sensors.append(entity)
+    for kind in ("outdoor_average_temperature", "last_sync"):
+        entity = MijnIstaConsumptionSensor(coordinator, cuid, kind)
+        if known_ids is None or entity.unique_id not in known_ids:
+            sensors.append(entity)
     return sensors
+
+
+class MijnIstaConsumptionSensor(CoordinatorEntity[MijnIstaCoordinator], SensorEntity):
+    """One source-provided service metric or property diagnostic."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: MijnIstaCoordinator,
+        cuid: str,
+        kind: str,
+        service: ServiceInfo | None = None,
+    ) -> None:
+        super().__init__(coordinator)
+        self._cuid = cuid
+        self._kind = kind
+        self._service_id = service.id if service else None
+        self._attr_unique_id = (
+            f"{DOMAIN}_{cuid}_svc{service.id}_{kind}"
+            if service
+            else f"{DOMAIN}_{cuid}_{kind}"
+        )
+        self._attr_translation_key = kind
+        if service:
+            self._attr_translation_placeholders = {
+                "service": _translate_service(
+                    service.description, coordinator.hass.config.language
+                )
+            }
+        if kind == "last_sync":
+            self._attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def _customer(self) -> CustomerData | None:
+        return (self.coordinator.data or {}).get(self._cuid)
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.native_value is not None
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._cuid)
+
+    @property
+    def native_value(self) -> float | datetime | None:
+        customer = self._customer
+        if customer is None:
+            return None
+        if self._kind == "last_sync":
+            return customer.last_sync
+        if self._kind == "outdoor_average_temperature":
+            return (
+                customer.outdoor_temperature
+                if customer.month == dt_util.now().date().replace(day=1)
+                else None
+            )
+        if self._kind in ("current_month", "building_average") and (
+            customer.month != dt_util.now().date().replace(day=1)
+        ):
+            return None
+        data = (
+            customer.consumption.get(self._service_id)
+            if self._service_id is not None
+            else None
+        )
+        if data is None:
+            return None
+        if self._kind == "current_month":
+            return data.monthly
+        if self._kind == "building_average":
+            return data.building_average
+        if self._kind == "normalized":
+            return data.normalized
+        return data.total
+
+    @property
+    def native_unit_of_measurement(self) -> str | None:
+        if self._kind == "outdoor_average_temperature":
+            return UnitOfTemperature.CELSIUS
+        customer = self._customer
+        service = (
+            next((s for s in customer.services if s.id == self._service_id), None)
+            if customer
+            else None
+        )
+        return _UNIT_MAP.get(service.unit) if service else None
+
+    @property
+    def device_class(self) -> SensorDeviceClass | None:
+        if self._kind == "last_sync":
+            return SensorDeviceClass.TIMESTAMP
+        if self._kind == "outdoor_average_temperature":
+            return SensorDeviceClass.TEMPERATURE
+        unit = self.native_unit_of_measurement
+        if unit == UnitOfVolume.CUBIC_METERS:
+            return SensorDeviceClass.WATER
+        if unit in (UnitOfEnergy.GIGA_JOULE, UnitOfEnergy.KILO_WATT_HOUR):
+            return SensorDeviceClass.ENERGY
+        return None
+
+    @property
+    def state_class(self) -> SensorStateClass | None:
+        if self._kind == "last_sync" or self.device_class is None:
+            return None
+        if self._kind == "total":
+            return SensorStateClass.TOTAL_INCREASING
+        if self._kind == "current_month":
+            return SensorStateClass.TOTAL
+        return (
+            SensorStateClass.MEASUREMENT
+            if self._kind == "outdoor_average_temperature"
+            else None
+        )
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        customer = self._customer
+        if customer is None:
+            return {}
+        data = (
+            customer.consumption.get(self._service_id)
+            if self._service_id is not None
+            else None
+        )
+        if self._kind == "total" and data is not None:
+            return data.meters[0] if len(data.meters) == 1 else {"meters": data.meters}
+        if self._kind in ("current_month", "building_average"):
+            attrs: dict[str, Any] = (
+                {"month": customer.month.isoformat()} if customer.month else {}
+            )
+            if self._kind == "current_month" and data is not None:
+                attrs["has_approximation"] = data.has_approximation
+            return attrs
+        return {}
+
+    @property
+    def last_reset(self) -> datetime | None:
+        customer = self._customer
+        if self._kind == "current_month" and customer and customer.month:
+            return datetime.combine(
+                customer.month, datetime.min.time(), dt_util.DEFAULT_TIME_ZONE
+            )
+        return None
 
 
 async def async_setup_entry(
@@ -171,13 +342,13 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up raw sensors, including meters first appearing after a partial response."""
+    """Set up sensors, including services and meters discovered on later refreshes."""
     coordinator: MijnIstaCoordinator = config_entry.runtime_data
     known_ids: set[str] = set()
 
     @callback
     def add_new_meters() -> None:
-        entities: list[MijnIstaSensor] = []
+        entities: list[SensorEntity] = []
         for cuid, customer in (coordinator.data or {}).items():
             entities.extend(
                 _build_sensors(coordinator, cuid, customer, known_ids=known_ids)

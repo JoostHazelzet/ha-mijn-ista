@@ -3,7 +3,7 @@
 [![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![GitHub release](https://img.shields.io/github/v/release/JoostHazelzet/mijn_ista_nl)](https://github.com/JoostHazelzet/mijn_ista_nl/releases)
 
-Home Assistant integration for [mijn.ista.nl](https://mijn.ista.nl) — the Dutch ista energy monitoring portal. Fetches and publishes raw, atomic meter readings as sensors; historical tracking and consumption analysis belong to Home Assistant or your chosen analytics tools.
+Home Assistant integration for [mijn.ista.nl](https://mijn.ista.nl) — the Dutch ista energy monitoring portal. Publishes physical meter readings alongside Ista's billing-period consumption, current-month consumption, building benchmarks, and climate diagnostics.
 
 ---
 
@@ -23,14 +23,22 @@ Home Assistant integration for [mijn.ista.nl](https://mijn.ista.nl) — the Dutc
 
 ## What it does
 
-Reads the current raw meter registers from mijn.ista.nl and creates one sensor
-per physical meter. No service totals, monthly or annual rollups, historical
-attributes, year-over-year comparisons, or building averages are calculated or
-published.
+Reads all four consumption endpoints, preserving the original physical meter
+sensors and adding source-provided metrics for each billing service.
 
 | Sensor | What it shows |
 |---|---|
 | `{Service} {serial}` | Current raw meter register (`EndValue`), not period consumption (`CValue`) |
+| `{Service} total` | Active billing-period consumption (`TotalNow`), with meter number, beginning and ending values |
+| `{Service} current month` | Calendar month's `TotalConsumption`, with `has_approximation` and month attributes |
+| `Building average {Service}` | Calendar month's `BuildingAverage` / `BuldingAverage` |
+| `Normalized Heating` | Ista's `NormalizedValue` for heating over the active billing period |
+| `Outdoor average temperature` | Calendar month's `at` in °C |
+| `Last API sync` | Source `ed` timestamp, not the local polling time |
+
+For a property with heating, warm water, and cold water this provides **12 new
+entities**, in addition to its existing meter entities. Names are localized for
+English and Dutch; Home Assistant assigns entity IDs, which can be renamed.
 
 All sensors are grouped under a single **ista NL** device per property in the Home Assistant device registry.
 Use Home Assistant's Energy Dashboard, Utility Meters, or Grafana for historical
@@ -38,41 +46,13 @@ tracking and comparisons.
 
 ---
 
-## Architecture rule: raw measurements only
+## Architecture: Ista remains the source of truth
 
-> **The integration's scope is strictly limited to fetching and publishing raw,
-> atomic measured values from the Ista API. Users handle historical tracking
-> and comparisons using the native Home Assistant Energy Dashboard, Utility
-> Meters, or Grafana.**
-
-This is a design constraint, not just the current feature set. Future changes
-must preserve this boundary:
-
-- **Ista is the single source of truth for measurements.** Publish the API's
-  measured register values without replacing them with calculated consumption,
-  synthetic counters, estimates, or consolidated service totals.
-- **The integration is a thin acquisition adapter.** Its responsibilities are
-  authentication, rate-limited fetching, validation, lossless normalization
-  (such as `YYYY-MM-DD` dates), and publishing entities with verified units and
-  Home Assistant metadata. Meter identity and reading-quality metadata may
-  accompany a measurement; historical datasets may not.
-- **History and analytics belong downstream.** Home Assistant Recorder and the
-  Energy Dashboard own native historical statistics; Utility Meters own
-  user-configured consumption cycles; Grafana can visualize and compare data
-  stored in a user-managed time-series backend.
-
-Annual or monthly totals, rollups across meters, year-over-year changes,
-building averages, and historical attributes are explicitly out of scope,
-even when the API offers them. Publishing a cumulative physical meter register
-is allowed: it is an atomic source measurement, not an integration-generated
-rollup.
-
-This follows the **Single Source of Truth** philosophy we apply to Home
-Assistant and the separation-of-concerns and single-responsibility principles
-used in modern Home Assistant integrations and microservice architecture.
-It avoids duplicating Home Assistant's statistics engine or creating competing
-versions of consumption history. See the
-[architecture requirements](REQUIREMENTS.md#11-architecture-rule-raw-measurements-and-single-source-of-truth).
+The coordinator fetches and validates Ista's registers, service totals, monthly
+values, and benchmarks. Sensors do not calculate substitute consumption or
+weather corrections. Home Assistant Recorder owns history from installation
+onward; this integration does not backfill monthly API history into statistics.
+See the [architecture requirements](REQUIREMENTS.md#11-architecture-rule-source-provided-measurements-and-benchmarks).
 
 ---
 
@@ -123,14 +103,80 @@ The update interval can be changed later via **Settings → Devices & Services �
 
 ---
 
+## Home Assistant entities
+
+The following **12 additional entities** are available for a property with hot
+water, heating, and cold water, alongside its existing physical meter sensors.
+Names below use English service labels; Dutch names are localized. Home Assistant
+generates entity IDs from the device and entity names, so IDs vary by property,
+language, and any user renaming.
+The **Example entity ID** column shows suggested IDs you can assign in Home
+Assistant; these are not guaranteed default IDs.
+
+Units follow the API's billing-service metadata. The tables show m³ for water
+and GJ for heating; heating services reporting kWh use kWh instead.
+
+### Billing-period totals
+
+These sensors expose consumption in the active billing period and can be used
+in the applicable Energy Dashboard section. They use
+`state_class: total_increasing`, with `device_class: water` or `energy`.
+
+| Sensor | Example entity ID | Unit | Attributes |
+|---|---|---|---|
+| Hot water total | `sensor.ista_warm_water_total` | m³ | `meter_number`, `begin_value`, `end_value` |
+| Heating total | `sensor.ista_heating_total` | GJ | `meter_number`, `begin_value`, `end_value` |
+| Cold water total | `sensor.ista_cold_water_total` | m³ | `meter_number`, `begin_value`, `end_value` |
+
+For services with multiple meters, these attributes are provided in a `meters`
+list instead. Select either a physical meter or its service total for the same
+supply in the Energy Dashboard, not both.
+
+### Current-month consumption
+
+The integration selects the `mc` entry matching the current calendar year and
+month, regardless of array order. Missing current-month data is unavailable.
+These sensors use `state_class: total` with a monthly `last_reset` to accommodate
+revised estimates; `has_approximation` reflects the API value rather than always
+being `true`.
+
+| Sensor | Example entity ID | Unit | Attributes |
+|---|---|---|---|
+| Hot water current month | `sensor.ista_warm_water_current_month` | m³ | `month`, `has_approximation` |
+| Heating current month | `sensor.ista_heating_current_month` | GJ | `month`, `has_approximation` |
+| Cold water current month | `sensor.ista_cold_water_current_month` | m³ | `month`, `has_approximation` |
+
+### Efficiency and benchmarks
+
+These contextual sensors publish Ista's building averages and normalized heating
+baseline unchanged. They are not cumulative Energy Dashboard sources.
+
+| Sensor | Example entity ID | Unit | What it shows |
+|---|---|---|---|
+| Building average Hot water | `sensor.ista_building_average_warm_water` | m³ | Current month's building average, with a `month` attribute |
+| Building average Heating | `sensor.ista_building_average_heating` | GJ | Current month's building average, with a `month` attribute |
+| Building average Cold water | `sensor.ista_building_average_cold_water` | m³ | Current month's building average, with a `month` attribute |
+| Normalized Heating | `sensor.ista_normalized_heating` | GJ | Ista's `NormalizedValue` for the active billing period, not a monthly value |
+
+### Climate and diagnostics
+
+| Sensor | Example entity ID | Unit | Device class | What it shows |
+|---|---|---|---|---|
+| Outdoor average temperature | `sensor.ista_outdoor_average_temperature` | °C | `temperature` | Current month's average outdoor temperature (`at`) |
+| Last API sync | `sensor.ista_last_sync` | — | `timestamp` | Source `ed` timestamp, not the local polling time; diagnostic entity |
+
+---
+
 ## Sensors in detail
 
 ### Raw readings and statistics
 
-The integration extracts `CurMeters[].EndValue` from `UserValues`. It does not
-subtract the beginning reading or sum meters, and does not request monthly
-history or building averages. API values are already decimal numbers; `DecPos`
-does not rescale them.
+The integration preserves `CurMeters[].EndValue` from `UserValues`.
+`ConsumptionValues` supplies active-period service totals, with `UserValues`
+as the source when the optional endpoint is unavailable. `MonthValues` supplies
+current-month consumption, building averages, temperature, and its source
+timestamp. `ConsumptionAverages` supplies the normalized heating benchmark.
+API values are already decimal numbers; `DecPos` does not rescale them.
 
 Verified physical register families are currently **ultego** heat meters (GJ or
 kWh, `device_class: energy`) and **domaqua** water meters (m³,
@@ -149,6 +195,28 @@ Attributes contain only meter identity, meter type, and `reading_date` when
 provided. Dates are normalized to **`YYYY-MM-DD`**, without inventing a time or
 timezone. Missing or invalid readings become unavailable, never zero. Meters
 that first appear in a later refresh are added automatically.
+
+### Consumption and benchmarks
+
+Service totals use `state_class: total_increasing` and water or energy device
+classes according to the service unit. They reset with billing periods; physical
+registers do not. Choose **either** a physical register or its service total for
+the same supply in the Energy Dashboard to avoid double counting.
+
+Current-month consumption uses `state_class: total` with a calendar-month
+`last_reset`, since estimates can be revised downward. Month entries are matched
+by year and month, not array order. If the API only returns older months, the
+current-month sensors are unavailable rather than showing stale history.
+Benchmarks are contextual values, not cumulative Energy Dashboard sources.
+Ista's normalized value is published unchanged, without assuming it is a
+monthly measurement. For services with multiple meters, totals expose a
+`meters` attribute instead of attributing the combined value to one meter.
+
+Missing values, missing KNMI temperature, and invalid or timezone-less source
+timestamps remain unavailable, never zero or an invented timestamp. Optional
+endpoint failures are logged without hiding valid physical readings. Startup
+uses quick month-shard polling; subsequent updates request complete shards.
+All requests retain the shared rate limiter and configured refresh frequency.
 
 ### Upgrading from period-based sensors
 
@@ -208,17 +276,18 @@ For API experiments without Home Assistant, install the independently packaged
 [`mijn-ista-client`](packages/mijn-ista-client/README.md):
 
 ```bash
-python -m pip install -e './packages/mijn-ista-api[test]' -e './packages/mijn-ista-client[test]'
-python packages/mijn-ista-client/examples/read_consumption.py
-cd packages/mijn-ista-client
-python -m pytest -q
-cd ../mijn-ista-api
-python -m pytest -q
+uv sync --locked
+uv run pytest -q
+uv run python packages/mijn-ista-client/examples/read_consumption.py
 ```
 
 Python 3.13 or newer is required. The example prompts for credentials and contacts
-the portal; the tests are offline and do not load Home Assistant. Use a separate
-virtual environment as described in the package README. The integration continues
+the portal; the tests are offline and do not load Home Assistant. Notebooks,
+examples and standalone tests share the repository's root `.venv`; no
+package-specific environment is required. Select that interpreter/kernel in
+VS Code. Run integration tests in the same environment with
+`uv run --locked --group integration pytest -q tests` (Python 3.13.2+).
+The integration continues
 to use its current API client until the standalone package is stable and published;
 see [REQUIREMENTS.md](REQUIREMENTS.md) for the adoption boundary.
 
@@ -228,10 +297,12 @@ Joost Hazelzet maintains this continuation of
 [Ali Alaei's original integration](https://github.com/aalaei/ha-mijn-ista).
 The original integration commits and subsequent development history are retained.
 The [original MIT-declared API client](https://github.com/aalaei/mijn-ista-api)
-has also been imported, with its complete Git history, into
-[`packages/mijn-ista-api`](packages/mijn-ista-api/README.md). Its maintained
-distribution is named `mijn-ista-api-community`; standalone development no longer
-requires the original author's published package.
+has also been imported with its complete Git history. Its protocol and the
+resilient wrapper now live in one
+[`packages/mijn-ista-client`](packages/mijn-ista-client/README.md) distribution,
+including the original MIT attribution. Standalone development no longer
+requires the original author's published package. The original subtree import
+and its commit history remain preserved.
 
 The repository is detached from GitHub's fork network and maintained independently
 as `JoostHazelzet/mijn_ista_nl`. Detachment and renaming preserved the Git commit

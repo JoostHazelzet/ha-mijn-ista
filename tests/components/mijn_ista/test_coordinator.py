@@ -19,7 +19,12 @@ from custom_components.mijn_ista.coordinator import (
     login_budget,
 )
 
-from .conftest import MOCK_USER_VALUES
+from .conftest import MOCK_AVG_VALUES, MOCK_MONTH_VALUES, MOCK_USER_VALUES
+
+
+@pytest.fixture(autouse=True)
+def current_month(freezer):
+    freezer.move_to("2024-11-15T12:00:00+00:00")
 
 
 @pytest.fixture
@@ -35,9 +40,7 @@ def test_raw_register_not_consumption(raw_customer):
     assert result.meters[(1, 101)].unit == "Gigajoule"
     assert len(result.meters) == 2
     assert result.address == "Teststraat 1"
-    assert not hasattr(result, "annual")
-    assert not hasattr(result, "monthly")
-    assert not hasattr(result, "building_averages")
+    assert result.consumption[1].total == 42.5
 
 
 @pytest.mark.parametrize(
@@ -128,9 +131,9 @@ def mock_api():
     api = MagicMock()
     api.authenticate = AsyncMock()
     api.get_user_values = AsyncMock(return_value=deepcopy(MOCK_USER_VALUES))
-    api.get_month_values = AsyncMock()
-    api.get_consumption_averages = AsyncMock()
-    api.get_consumption_values = AsyncMock()
+    api.get_month_values = AsyncMock(return_value=deepcopy(MOCK_MONTH_VALUES))
+    api.get_consumption_averages = AsyncMock(return_value=deepcopy(MOCK_AVG_VALUES))
+    api.get_consumption_values = AsyncMock(return_value={"ServicesComp": []})
     return api
 
 
@@ -142,15 +145,20 @@ def mock_entry():
     return entry
 
 
-async def test_only_user_values_requested(hass, mock_api, mock_entry):
+async def test_all_datasets_requested(hass, mock_api, mock_entry):
     coord = MijnIstaCoordinator(hass, mock_entry, mock_api)
     for _ in range(2):
         result = await coord._async_update_data()
         assert len(result["test-cuid-abc123"].meters) == 2
     assert mock_api.get_user_values.await_count == 2
-    mock_api.get_month_values.assert_not_awaited()
-    mock_api.get_consumption_averages.assert_not_awaited()
-    mock_api.get_consumption_values.assert_not_awaited()
+    assert mock_api.get_month_values.await_count == 2
+    mock_api.get_month_values.assert_any_await("test-cuid-abc123", quick=True)
+    mock_api.get_month_values.assert_any_await("test-cuid-abc123", quick=False)
+    assert mock_api.get_consumption_averages.await_count == 2
+    mock_api.get_consumption_averages.assert_awaited_with(
+        "test-cuid-abc123", "2024-01-01", "2024-12-31"
+    )
+    assert mock_api.get_consumption_values.await_count == 2
 
 
 async def test_multiple_properties(hass, mock_api, mock_entry):
@@ -161,6 +169,9 @@ async def test_multiple_properties(hass, mock_api, mock_entry):
     result = await coord._async_update_data()
     assert set(result) == {"test-cuid-abc123", "second-cuid"}
     mock_api.get_user_values.assert_awaited_once()
+    assert mock_api.get_month_values.await_count == 2
+    assert mock_api.get_consumption_values.await_count == 2
+    assert mock_api.get_consumption_averages.await_count == 2
 
 
 async def test_auth_failure(hass, mock_api, mock_entry):
@@ -241,7 +252,8 @@ async def test_timeout_covers_401_retry(hass, mock_api, mock_entry):
     coord = MijnIstaCoordinator(hass, mock_entry, mock_api, authenticated=True)
     with patch("custom_components.mijn_ista.coordinator.asyncio.timeout") as timeout:
         await coord._async_update_data()
-    timeout.assert_called_once_with(210)
+    assert timeout.call_args_list[0].args == (210,)
+    assert timeout.call_count == 4
 
 
 def test_login_budget():

@@ -10,11 +10,14 @@ responses rather than mocking a single endpoint.
 
 from __future__ import annotations
 
+import ast
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-from mijn_ista_api import MijnIstaAPI, MijnIstaAuthError, MijnIstaConnectionError
+from mijn_ista_client import MijnIstaAPI, MijnIstaAuthError, MijnIstaConnectionError
 
 AUTHORIZE_URL = (
     "https://login.ista.com/realms/portal_nl/protocol/openid-connect/auth?state=abc"
@@ -351,3 +354,154 @@ class TestEndpoints:
         assert body["PAR"]["start"] == "2024-01-01"
         assert body["PAR"]["end"] == "2024-12-31"
         assert body["PAR"]["cuid"] == "cuid-1"
+
+
+class TestNotebookDataCalls:
+    """Execute the manual-login data cells offline with the real API client."""
+
+    @pytest.fixture
+    def cells(self):
+        notebook = Path(__file__).resolve().parents[3] / "notebooks/auth_playground.ipynb"
+        return {
+            cell["id"]: "".join(cell["source"])
+            for cell in json.loads(notebook.read_text())["cells"]
+            if cell["cell_type"] == "code"
+        }
+
+    def namespace(self, session, *, csrf="manual-csrf"):
+        return {
+            "MijnIstaAPI": MijnIstaAPI,
+            "s": session,
+            "USERNAME": "test@example.com",
+            "PASSWORD": "test-password",
+            "LANG": "nl-NL",
+            "state": {"csrf": csrf},
+            "mask": lambda value, length: str(value)[:length],
+            "show_trace": lambda _session: None,
+        }
+
+    async def run_cell(self, cells, cell_id, namespace):
+        code = compile(
+            cells[cell_id], f"notebook:{cell_id}", "exec",
+            flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT,
+        )
+        await eval(code, namespace)
+
+    async def test_all_endpoint_payloads_and_shard_polling(self, cells):
+        period = {
+            "y": 2027, "s": "2026-07-01T00:00:00",
+            "e": "2027-06-30T00:00:00", "ta": 17.7,
+        }
+        user = {
+            "Cus": [
+                {
+                    "Cuid": cuid,
+                    "curConsumption": {
+                        "BillingPeriods": [{"y": 2026}, period],
+                    },
+                }
+                for cuid in ("property-1", "property-2")
+            ]
+        }
+        month = {"hs": 1, "sh": 1, "mc": [{"y": 2026, "m": 9}]}
+        totals = {"ServicesComp": [{"Id": 2, "TotalNow": 1.0}]}
+        averages = {"Averages": [{"BillingServiceId": 2, "NormalizedValue": 2.0}]}
+        session = _FakeSession(post_responses=[
+            _FakeResponse(json_data=user),
+            _FakeResponse(425, json_data={"hs": 0, "sh": 1, "mc": []}),
+            _FakeResponse(json_data=month),
+            _FakeResponse(json_data=month),
+            _FakeResponse(json_data=totals),
+            _FakeResponse(json_data=totals),
+            _FakeResponse(json_data=averages),
+            _FakeResponse(json_data=averages),
+        ])
+        namespace = self.namespace(session)
+        with patch("asyncio.sleep", new_callable=AsyncMock) as sleep:
+            for cell_id in ("59080afe", "76486955", "eabc7c19", "85e4e9a6"):
+                await self.run_cell(cells, cell_id, namespace)
+
+        assert namespace["user_values"] == user
+        for name, expected in (
+            ("month_values", month),
+            ("consumption_values", totals),
+            ("consumption_averages", averages),
+        ):
+            assert namespace[name] == dict.fromkeys(("property-1", "property-2"), expected)
+        expected_calls = [
+            ("/api/Values/UserValues", {"LANG": "nl-NL"}),
+            *[
+                ("/api/Consumption/MonthValues", {"LANG": "nl-NL", "Cuid": cuid})
+                for cuid in ("property-1", "property-1", "property-2")
+            ],
+            *[
+                (
+                    "/api/Values/ConsumptionValues",
+                    {"LANG": "nl-NL", "Cuid": cuid, "Billingperiod": period},
+                )
+                for cuid in ("property-1", "property-2")
+            ],
+            *[
+                (
+                    "/api/Values/ConsumptionAverages",
+                    {
+                        "LANG": "nl-NL", "Cuid": cuid,
+                        "PAR": {"start": "2026-07-01", "end": "2027-06-30", "cuid": cuid},
+                    },
+                )
+                for cuid in ("property-1", "property-2")
+            ],
+        ]
+        assert len(session.post_calls) == len(expected_calls)
+        for (url, kwargs), (path, body) in zip(session.post_calls, expected_calls):
+            assert url == f"https://mijn.ista.nl{path}"
+            assert kwargs["json"] == body
+            assert kwargs["headers"]["x-csrf-token-ista-nl_tp"] == "manual-csrf"
+        sleep.assert_awaited_once()
+        assert session.get_calls == []  # Reuse login; do not authenticate again.
+
+    @pytest.mark.parametrize("customers", [[], [{"Cuid": "property-1"}]])
+    async def test_partial_account_data(self, cells, customers, capsys):
+        session = _FakeSession(post_responses=[
+            _FakeResponse(json_data={"Cus": customers}),
+            *[
+                _FakeResponse(json_data={"hs": 1, "sh": 1, "mc": []})
+                for _ in customers
+            ],
+        ])
+        namespace = self.namespace(session)
+        for cell_id in ("59080afe", "76486955", "eabc7c19", "85e4e9a6"):
+            await self.run_cell(cells, cell_id, namespace)
+        assert namespace["consumption_values"] == {}
+        assert namespace["consumption_averages"] == {}
+        assert len(session.post_calls) == 1 + len(customers)
+        output = capsys.readouterr().out
+        if customers:
+            assert "no billing period" in output
+            assert "No monthly consumption" in output
+        else:
+            assert "No properties returned" in output
+
+    async def test_missing_csrf_is_explicit(self, cells):
+        session = _FakeSession()
+        with pytest.raises(RuntimeError, match="No CSRF token"):
+            await self.run_cell(cells, "59080afe", self.namespace(session, csrf=None))
+        assert session.post_calls == []
+
+    @pytest.mark.parametrize("cell_id", ["eabc7c19", "85e4e9a6"])
+    async def test_request_failures_are_not_hidden(self, cells, cell_id):
+        session = _FakeSession(post_responses=[
+            _FakeResponse(json_data={
+                "Cus": [{
+                    "Cuid": "property-1",
+                    "curConsumption": {"BillingPeriods": [{
+                        "y": 2027, "s": "2026-07-01", "e": "2027-06-30",
+                    }]},
+                }],
+            }),
+            _FakeResponse(500),
+        ])
+        namespace = self.namespace(session)
+        await self.run_cell(cells, "59080afe", namespace)
+        with pytest.raises(MijnIstaConnectionError):
+            await self.run_cell(cells, cell_id, namespace)

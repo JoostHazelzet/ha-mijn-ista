@@ -1,4 +1,4 @@
-"""Async Python client for mijn.ista.nl."""
+"""Low-level async protocol for mijn.ista.nl, originally by Ali Alaei."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Tests for raw meter sensors and retirement of derived entities."""
+"""Regression tests for preserved meter sensors and legacy entity cleanup."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.mijn_ista.const import DOMAIN
 from custom_components.mijn_ista.coordinator import MijnIstaCoordinator, _parse_customer
 from custom_components.mijn_ista.sensor import (
+    MijnIstaSensor,
     _build_sensors,
     _remove_stale_sensors,
     _translate_service,
@@ -35,7 +36,11 @@ def coordinator(hass):
 
 
 def sensors(coordinator):
-    return _build_sensors(coordinator, CUID, coordinator.data[CUID])
+    return [
+        sensor
+        for sensor in _build_sensors(coordinator, CUID, coordinator.data[CUID])
+        if isinstance(sensor, MijnIstaSensor)
+    ]
 
 
 @pytest.mark.parametrize(
@@ -52,7 +57,7 @@ def test_translation(description, language, expected):
     assert _translate_service(description, language) == expected
 
 
-def test_one_sensor_per_meter_no_derived_sensors(coordinator):
+def test_existing_meter_sensors_preserved(coordinator):
     built = sensors(coordinator)
     assert len(built) == 2
     assert {s.unique_id for s in built} == {
@@ -244,7 +249,7 @@ async def test_late_meters_added_without_duplicates(hass):
     customer = _parse_customer(deepcopy(MOCK_USER_VALUES["Cus"][0]))
     coord.async_set_updated_data({CUID: customer})
     assert add_entities.call_count == 1
-    assert len(add_entities.call_args.args[0]) == 2
+    assert len(add_entities.call_args.args[0]) == 11
     coord.async_set_updated_data({})
     coord.async_set_updated_data({CUID: customer})
     assert add_entities.call_count == 1
@@ -268,7 +273,7 @@ async def test_real_sensor_states_and_metadata(hass):
         assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     states = hass.states.async_all("sensor")
-    assert len(states) == 2
+    assert len(states) == 11
     heating = next(s for s in states if s.attributes.get("meter_id") == 101)
     assert float(heating.state) == 31.335
     assert heating.attributes["state_class"] == "total_increasing"
